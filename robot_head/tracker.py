@@ -290,7 +290,7 @@ class CameraTracker:
         self.update_head_tilt()
 
     def head_tilt_callback(self, msg):
-        self.get_logger().info('Received head tilt msg: angle: %s, transition_duration: %d, dwell_duration: %d' % \
+        self.node.get_logger().info('Received head tilt msg: angle: %s, transition_duration: %d, dwell_duration: %d' % \
             (msg.angle, msg.transition_duration, msg.dwell_duration))
         self.head_tilt_cmd_angle = msg.angle
         self.head_tilt_cmd_trans_dur = msg.transition_duration
@@ -335,7 +335,7 @@ class CameraTracker:
         self.update_smile()
 
     def smile_callback(self, msg):
-        self.get_logger().info('Received smile msg: mode: %s, level: %d, duration: %d, def: %s' % (msg.mode, msg.level, msg.duration_ms, msg.use_as_default))
+        self.node.get_logger().info('Received smile msg: mode: %s, level: %d, duration: %d, def: %s' % (msg.mode, msg.level, msg.duration_ms, msg.use_as_default))
         self.smile_cmd_mode = msg.mode
         self.smile_cmd_level = msg.level
         self.smile_cmd_duration_ms = msg.duration_ms

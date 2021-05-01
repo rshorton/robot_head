@@ -189,6 +189,9 @@ class RobotHead(Node):
             color = (64, 255, 64)
 
             while True:
+
+                rclpy.spin_once(self);
+
                 inPreview = previewQueue.get()
                 inNN = detectionNNQueue.get()
                 depth = depthQueue.get()
