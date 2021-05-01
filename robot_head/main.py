@@ -28,6 +28,11 @@ from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 
 from pose import getKeypoints, getValidPairs, getPersonwiseKeypoints
+from tracker import CameraTracker
+
+# Custom object detection messages
+from object_detection_msgs.msg import ObjectDescArray
+from object_detection_msgs.msg import ObjectDesc
 
 human_pose = True
 
@@ -141,13 +146,18 @@ keypoints_list = None
 detected_keypoints = None
 personwiseKeypoints = None
 
-class DepthAIControl(Node):
+class RobotHead(Node):
     def __init__(self):
         super().__init__('robot_head')
 
         self.image = None
         self.imagePub = self.create_publisher(Image, '/color/image', 10)
         self.bridge = CvBridge()
+
+        # Publisher for list of detected objects
+        self.objectPublisher = self.create_publisher(ObjectDescArray, 'detected_objects', 10)
+
+        self.tracker = CameraTracker(self)
 
         self.pose_cnt = 0
         self.h = 256
@@ -168,7 +178,7 @@ class DepthAIControl(Node):
             if human_pose:
                 pose_nn = device.getOutputQueue("pose_nn", 1, False)
                 t = threading.Thread(target=self.pose_thread, args=(pose_nn, ))
-                t.start()
+                #t.start()
 
             frame = None
             detections = []
@@ -221,6 +231,11 @@ class DepthAIControl(Node):
                 # If the frame is available, draw bounding boxes on it and show the frame
                 height = frame.shape[0]
                 width  = frame.shape[1]
+
+                # Publish and update tracker
+                self.process_detections(detections, width, height)
+
+                # Display detections
                 for detection in detections:
                     # Denormalize bounding box
                     x1 = int(detection.xmin * width)
@@ -239,6 +254,7 @@ class DepthAIControl(Node):
 
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
 
+                # Display Human pose
                 try:
                     if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
                         for i in range(18):
@@ -268,6 +284,57 @@ class DepthAIControl(Node):
 
                 if cv2.waitKey(1) == ord('q'):
                     break
+
+    def process_detections(self, detections, w, h):
+        # Build a message containing the objects.  Uses
+        # a custom message format
+        objList = []
+        objListTrack = []
+
+        for detection in detections:
+            # Denormalize bounding box
+            x1 = int(detection.xmin * w)
+            x2 = int(detection.xmax * w)
+            y1 = int(detection.ymin * h)
+            y2 = int(detection.ymax * h)
+
+            try:
+                label = labelMap[detection.label]
+            except:
+                label = detection.label
+
+            #print(detection)
+            desc = ObjectDesc()
+            desc.id = detection.label
+            desc.name = label
+            # Map to ROS convention
+            desc.x = detection.spatialCoordinates.z
+            desc.y = -1*detection.spatialCoordinates.x
+            desc.z = 0.0
+            desc.c = 0
+            objList += (desc,)
+
+            # Add to a list used by pan-tilt tracking if the object we
+            # want to track
+            if label == 'person':
+                obj = {}
+                obj['name'] = label
+                obj['x'] = desc.x
+                obj['y'] = desc.y
+                obj['z'] = desc.z
+                obj['x_min'] = detection.xmin
+                obj['x_max'] = detection.xmax
+                obj['y_min'] = detection.ymin
+                obj['y_max'] = detection.ymax
+                objListTrack.append(obj.copy())
+
+        # Publish the object message to our topic
+        msgObjects = ObjectDescArray()
+        msgObjects.objects = objList
+        self.objectPublisher.publish(msgObjects)
+
+        # Update pan/tilt
+        self.tracker.process_detections(objListTrack)
 
     def pose_thread(self, in_queue):
         global keypoints_list, detected_keypoints, personwiseKeypoints
@@ -312,7 +379,7 @@ class DepthAIControl(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    depthai_publisher = DepthAIControl()
+    depthai_publisher = RobotHead()
 
     rclpy.spin(depthai_publisher)
 
