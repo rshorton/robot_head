@@ -29,12 +29,14 @@ from sensor_msgs.msg import Image
 
 from pose import getKeypoints, getValidPairs, getPersonwiseKeypoints
 from tracker import CameraTracker
+from pose_interp import analyze_pose
 
 # Custom object detection messages
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
 
 human_pose = True
+human_pose_process = True
 
 colors = [[0, 100, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 0],
           [255, 200, 100], [255, 0, 255], [0, 255, 0], [255, 200, 100], [255, 0, 255], [0, 0, 255], [255, 0, 0],
@@ -74,7 +76,7 @@ def create_pipeline():
     colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     colorCam.setInterleaved(False)
     colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    colorCam.setFps(16.0);
+    colorCam.setFps(12.0);
 
     monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
@@ -145,6 +147,7 @@ pose = None
 keypoints_list = None
 detected_keypoints = None
 personwiseKeypoints = None
+new_pose = False
 
 class RobotHead(Node):
     def __init__(self):
@@ -178,7 +181,7 @@ class RobotHead(Node):
             if human_pose:
                 pose_nn = device.getOutputQueue("pose_nn", 1, False)
                 t = threading.Thread(target=self.pose_thread, args=(pose_nn, ))
-                #t.start()
+                t.start()
 
             frame = None
             detections = []
@@ -237,6 +240,11 @@ class RobotHead(Node):
 
                 # Publish and update tracker
                 self.process_detections(detections, width, height)
+
+                global new_pose
+                if new_pose == True:
+                    new_pose = False
+                    analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints)
 
                 # Display detections
                 for detection in detections:
@@ -340,16 +348,21 @@ class RobotHead(Node):
         self.tracker.process_detections(objListTrack)
 
     def pose_thread(self, in_queue):
-        global keypoints_list, detected_keypoints, personwiseKeypoints
+        global keypoints_list, detected_keypoints, personwiseKeypoints, new_pose
 
         while running:
+            if human_pose_process != True:
+                time.sleep(0.5)
+                continue
+
             try:
                 raw_in = in_queue.get()
             except RuntimeError:
                 return
 
             self.pose_cnt += 1
-            if (self.pose_cnt % 2) == 0:
+            #if (self.pose_cnt % 2) == 0:
+            if True:
                 #fps.tick('nn')
                 heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
                 pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))
@@ -378,6 +391,8 @@ class RobotHead(Node):
                 newPersonwiseKeypoints = getPersonwiseKeypoints(valid_pairs, invalid_pairs, new_keypoints_list)
 
                 detected_keypoints, keypoints_list, personwiseKeypoints = (new_keypoints, new_keypoints_list, newPersonwiseKeypoints)
+                new_pose = True
+                print("New pose")
 
 
 def main(args=None):

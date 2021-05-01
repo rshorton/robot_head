@@ -23,5 +23,5 @@ setup(
             'robot_head = robot_head.main:main',
         ],
     },
-    scripts=['robot_head/pose.py', 'robot_head/tracker.py']
+    scripts=['robot_head/pose.py', 'robot_head/pose_interp.py', 'robot_head/tracker.py']
 )
