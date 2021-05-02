@@ -104,6 +104,12 @@ def detect_pose_side(side, w, e, s, no, ne):
 
 invalid_coord = 10000.0
 
+def get_empty_pose():
+    pose = {};
+    pose["left"] = "none"
+    pose["right"] = "none"
+    return pose
+
 def detect_pose(kp, pp_by_name):
 
     detected = "false"
@@ -120,11 +126,16 @@ def detect_pose(kp, pp_by_name):
                          kp[pp_by_name['Nose']], kp[pp_by_name['Neck']]);
 
 
-    pose = detected + "," + pose_l + "," + pose_r
-    f = open("/home/ubuntu/tmp/pose_wr", "x");
-    f.write(pose)
-    f.close()
-    os.rename("/home/ubuntu/tmp/pose_wr", "/home/ubuntu/tmp/pose")
+    pose = {};
+    pose["left"] = pose_l
+    pose["right"] = pose_r
+    return pose
+
+#    pose = detected + "," + pose_l + "," + pose_r
+#    f = open("/home/ubuntu/tmp/pose_wr", "x");
+#    f.write(pose)
+#    f.close()
+#    os.rename("/home/ubuntu/tmp/pose_wr", "/home/ubuntu/tmp/pose")
 
 
 def show_kp(kp, pp_by_name):
@@ -219,6 +230,7 @@ dump = False
 
 def analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints):
 
+    pose = get_empty_pose()
     if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
         if dump == True:
             print("detected_keypoints")
@@ -257,8 +269,6 @@ def analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints):
             #
             # Nose(211, 92), Neck(204, 155),       R-Sho(170, 148), R-Elb(130, 203),     L-Sho(250, 156), L-Elb(275, 221),
             # R-Eye(203, 90), L-Eye(219, 91),      R-Ear(189, 100), L-Ear(227, 100),
-
-        pose = ""
 
         pp_by_name = {'Nose': 0,  'Neck': 1,
                         'ShoR': 2,  'ElbR': 3,  'WrR': 4,
@@ -301,4 +311,5 @@ def analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints):
                 print(keypoints_list)
 
             kp = np.array(kp)
-            detect_pose(kp, pp_by_name)
+            pose = detect_pose(kp, pp_by_name)
+    return pose

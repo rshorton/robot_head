@@ -35,8 +35,18 @@ from pose_interp import analyze_pose
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
 
+from human_pose_interfaces.msg import DetectedPose, EnablePoseDetection
+
 human_pose = True
 human_pose_process = True
+
+running = True
+pose = None
+
+keypoints_list = None
+detected_keypoints = None
+personwiseKeypoints = None
+new_pose = False
 
 colors = [[0, 100, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 0],
           [255, 200, 100], [255, 0, 255], [0, 255, 0], [255, 200, 100], [255, 0, 255], [0, 0, 255], [255, 0, 0],
@@ -142,12 +152,13 @@ def create_pipeline():
     print("Pipeline created.")
     return pipeline
 
-running = True
-pose = None
-keypoints_list = None
-detected_keypoints = None
-personwiseKeypoints = None
-new_pose = False
+def clear_pose_detection():
+    global keypoints_list, detected_keypoints, personwiseKeypoints, new_pose
+    print('Clearing pose detections')
+    keypoints_list = None
+    detected_keypoints = None
+    personwiseKeypoints = None
+    new_pose = True
 
 class RobotHead(Node):
     def __init__(self):
@@ -158,13 +169,30 @@ class RobotHead(Node):
         self.bridge = CvBridge()
 
         # Publisher for list of detected objects
-        self.objectPublisher = self.create_publisher(ObjectDescArray, 'detected_objects', 10)
+        self.objectPublisher = self.create_publisher(
+            ObjectDescArray,
+            '/head/detected_objects',
+            10)
+
+        # Publisher for pose
+        self.posePublisher = self.create_publisher(
+            DetectedPose,
+            '/head/detected_pose',
+             1)
+
+        self.subPoseDetectEnable = self.create_subscription(
+            EnablePoseDetection,
+            '/head/enable_pose_detect',
+            self.pose_detect_enable_callback,
+            1)
 
         self.tracker = CameraTracker(self)
 
         self.pose_cnt = 0
         self.h = 256
         self.w = 456
+
+        self.setWinPos = True;
 
         show_depth = False
 
@@ -244,7 +272,13 @@ class RobotHead(Node):
                 global new_pose
                 if new_pose == True:
                     new_pose = False
-                    analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints)
+                    pose = analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints)
+                    print("pose: ")
+                    print(pose)
+                    msg = DetectedPose()
+                    msg.left = pose['left']
+                    msg.right = pose['right']
+                    self.posePublisher.publish(msg)
 
                 # Display detections
                 for detection in detections:
@@ -257,11 +291,12 @@ class RobotHead(Node):
                         label = labelMap[detection.label]
                     except:
                         label = detection.label
-                    cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                    cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                    cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                    cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                    cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
+                    font_scale = 0.4
+                    cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
+                    cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
+                    cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
+                    cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
+                    cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
 
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
 
@@ -287,14 +322,24 @@ class RobotHead(Node):
                 if show_depth:
                     cv2.imshow("depth", depthFrameColor)
 
-#                resized = cv2.resize(frame, (456, 256), interpolation = cv2.INTER_AREA)
-#                cv2.imshow("rgb", resized)
-                cv2.imshow("rgb", frame)
+                resized = cv2.resize(frame, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
+                cv2.imshow("rgb", resized)
+#                cv2.imshow("rgb", frame)
+                if self.setWinPos:
+                    self.setWinPos = False
+                    cv2.moveWindow("rgb", 78, 30)
 
                 self.imagePub.publish(self.bridge.cv2_to_imgmsg(frame, "bgr8"))
 
                 if cv2.waitKey(1) == ord('q'):
                     break
+
+    def pose_detect_enable_callback(self, msg):
+        global human_pose_process
+        self.get_logger().info('Received EnablePoseDetect msg: mode: %d' % msg.enable)
+        human_pose_process = msg.enable
+        if msg.enable is False:
+            clear_pose_detection()
 
     def process_detections(self, detections, w, h):
         # Build a message containing the objects.  Uses
@@ -390,10 +435,10 @@ class RobotHead(Node):
                 valid_pairs, invalid_pairs = getValidPairs(outputs, self.w, self.h, new_keypoints)
                 newPersonwiseKeypoints = getPersonwiseKeypoints(valid_pairs, invalid_pairs, new_keypoints_list)
 
-                detected_keypoints, keypoints_list, personwiseKeypoints = (new_keypoints, new_keypoints_list, newPersonwiseKeypoints)
-                new_pose = True
-                print("New pose")
-
+                if human_pose_process == True:
+                    detected_keypoints, keypoints_list, personwiseKeypoints = (new_keypoints, new_keypoints_list, newPersonwiseKeypoints)
+                    new_pose = True
+                    print("New pose")
 
 def main(args=None):
     rclpy.init(args=args)

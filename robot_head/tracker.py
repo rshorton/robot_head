@@ -196,14 +196,14 @@ class CameraTracker:
 
         self.sub_smile = node.create_subscription(
             Smile,
-            'smile',
+            '/head/smile',
             self.smile_callback,
             10)
         self.sub_smile  # prevent unused variable warning
 
         self.sub_head_tilt = node.create_subscription(
             HeadTilt,
-            'head_tilt',
+            '/head/tilt',
             self.head_tilt_callback,
             10)
         self.sub_head_tilt  # prevent unused variable warning
