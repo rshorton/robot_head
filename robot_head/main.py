@@ -193,8 +193,9 @@ class RobotHead(Node):
         self.w = 456
 
         self.setWinPos = True;
-
         show_depth = False
+
+        pose_last = None
 
         with dai.Device(create_pipeline()) as device:
             print("Starting pipeline...")
@@ -273,32 +274,13 @@ class RobotHead(Node):
                 if new_pose == True:
                     new_pose = False
                     pose = analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints)
-                    print("pose: ")
-                    print(pose)
+                    #print("pose: %s" % str(pose))
                     msg = DetectedPose()
+                    msg.detected = pose["detected"]
                     msg.left = pose['left']
                     msg.right = pose['right']
                     self.posePublisher.publish(msg)
-
-                # Display detections
-                for detection in detections:
-                    # Denormalize bounding box
-                    x1 = int(detection.xmin * width)
-                    x2 = int(detection.xmax * width)
-                    y1 = int(detection.ymin * height)
-                    y2 = int(detection.ymax * height)
-                    try:
-                        label = labelMap[detection.label]
-                    except:
-                        label = detection.label
-                    font_scale = 0.4
-                    cv2.putText(frame, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
-                    cv2.putText(frame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
-                    cv2.putText(frame, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
-                    cv2.putText(frame, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
-                    cv2.putText(frame, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, font_scale, color)
-
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+                    pose_last = pose;
 
                 # Display Human pose
                 try:
@@ -317,19 +299,48 @@ class RobotHead(Node):
                 except:
                     print("keypoint out of bound")
 
-                cv2.putText(frame, "NN fps: {:.2f}".format(fps), (2, frame.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                flipped = cv2.flip(frame, 1)
+
+                # Display detections
+                for detection in detections:
+                    try:
+                        label = labelMap[detection.label]
+                    except:
+                        label = detection.label
+                    if label != 'person':
+                        continue
+
+                    # Denormalize bounding box
+                    x1 = int(detection.xmin * width)
+                    x2 = int(detection.xmax * width)
+                    y1 = int(detection.ymin * height)
+                    y2 = int(detection.ymax * height)
+                    font_scale = 0.4
+                    cv2.putText(flipped, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                    cv2.putText(flipped, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                    cv2.putText(flipped, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                    cv2.putText(flipped, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                    cv2.putText(flipped, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+
+                    # Fix - handle multiple persons
+                    if pose_last is not None and label == 'person':
+                        cv2.putText(flipped, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(flipped, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+
+                    cv2.rectangle(flipped, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+
+                cv2.putText(flipped, "NN fps: {:.2f}".format(fps), (2, flipped.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
 
                 if show_depth:
                     cv2.imshow("depth", depthFrameColor)
 
-                resized = cv2.resize(frame, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
+                resized = cv2.resize(flipped, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
                 cv2.imshow("rgb", resized)
-#                cv2.imshow("rgb", frame)
                 if self.setWinPos:
                     self.setWinPos = False
                     cv2.moveWindow("rgb", 78, 30)
 
-                self.imagePub.publish(self.bridge.cv2_to_imgmsg(frame, "bgr8"))
+                self.imagePub.publish(self.bridge.cv2_to_imgmsg(flipped, "bgr8"))
 
                 if cv2.waitKey(1) == ord('q'):
                     break
@@ -438,7 +449,6 @@ class RobotHead(Node):
                 if human_pose_process == True:
                     detected_keypoints, keypoints_list, personwiseKeypoints = (new_keypoints, new_keypoints_list, newPersonwiseKeypoints)
                     new_pose = True
-                    print("New pose")
 
 def main(args=None):
     rclpy.init(args=args)

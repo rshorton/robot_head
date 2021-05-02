@@ -6,17 +6,21 @@ import sys
 import os
 
 nPoints = 18
+debug = False
 
 PI = 3.1415
 def calc_joint_angle(base_pt, joint_pt, end_pt):
     if base_pt[0] == invalid_coord:
-        print("Missing base_pt")
+        if debug:
+            print("Missing base_pt")
         return None
     if joint_pt[0] == invalid_coord:
-        print("Missing joint_pt")
+        if debug:
+            print("Missing joint_pt")
         return None
     if end_pt[0] == invalid_coord:
-        print("Missing end_pt")
+        if debug:
+            print("Missing end_pt")
         return None
 
     b_j = np.linalg.norm(base_pt - joint_pt)
@@ -44,7 +48,8 @@ def calc_joint_angle(base_pt, joint_pt, end_pt):
     rise = joint_pt[1] - base_pt[1]
     run = joint_pt[0] - base_pt[0]
     if run == 0.0:
-        print("base segment is vert")
+        if debug:
+            print("base segment is vert")
         # base segment is vertical, use x for angle direction
         if end_pt[0] < joint_pt[0]:
             a *= -1;
@@ -97,8 +102,8 @@ def detect_pose_side(side, w, e, s, no, ne):
 
     pose = pose_from_angles(joint_s, joint_e)
 
-    print("%s: S %s,  E %s, Pose %s" % (side, joint_s, joint_e, pose))
-    #print("%s: E %s" % (side, joint_e))
+    if debug:
+        print("%s: S %s,  E %s, Pose %s" % (side, joint_s, joint_e, pose))
 
     return pose
 
@@ -106,18 +111,20 @@ invalid_coord = 10000.0
 
 def get_empty_pose():
     pose = {};
+    pose["detected"] = False
     pose["left"] = "none"
     pose["right"] = "none"
     return pose
 
 def detect_pose(kp, pp_by_name):
 
-    detected = "false"
+    detected = False
     pose_r = "none"
     pose_l = "none"
     if kp[pp_by_name['Nose']][0] != invalid_coord and kp[pp_by_name['Neck']][0] != invalid_coord:
-        detected = "true"
-        print("------------------")
+        detected = True
+        if debug:
+            print("------------------")
         #print("%s, %s, %s" % (kp[pp_by_name['WrR']], kp[pp_by_name['ElbR']], kp[pp_by_name['ShoR']]))
         pose_r = detect_pose_side("Right", kp[pp_by_name['WrR']]*[-1.0,1.0], kp[pp_by_name['ElbR']]*[-1.0,1.0], kp[pp_by_name['ShoR']]*[-1.0,1.0],
                          kp[pp_by_name['Nose']], kp[pp_by_name['Neck']]);
@@ -127,6 +134,7 @@ def detect_pose(kp, pp_by_name):
 
 
     pose = {};
+    pose["detected"] = detected
     pose["left"] = pose_l
     pose["right"] = pose_r
     return pose
