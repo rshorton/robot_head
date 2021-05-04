@@ -86,7 +86,10 @@ def create_pipeline():
     colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     colorCam.setInterleaved(False)
     colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    colorCam.setFps(12.0);
+    # Run at 18 fps but only display/publish/process pose as a fraction of that rate.
+    # This provides a faster update rate for the tracking function which is based on the
+    # detection nn output.
+    colorCam.setFps(18.0);
 
     monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
@@ -202,10 +205,10 @@ class RobotHead(Node):
             device.startPipeline()
 
             # Output queues will be used to get the rgb frames and nn data from the outputs defined above
-            previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-            detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
-            xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=4, blocking=False)
-            depthQueue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
+            previewQueue = device.getOutputQueue(name="rgb", maxSize=1, blocking=False)
+            detectionNNQueue = device.getOutputQueue(name="detections", maxSize=2, blocking=False)
+            xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=2, blocking=False)
+            depthQueue = device.getOutputQueue(name="depth", maxSize=1, blocking=False)
 
             if human_pose:
                 pose_nn = device.getOutputQueue("pose_nn", 1, False)
@@ -219,6 +222,8 @@ class RobotHead(Node):
             counter = 0
             fps = 0
             color = (64, 255, 64)
+
+            disp_cnt = 0
 
             while True:
 
@@ -234,6 +239,9 @@ class RobotHead(Node):
                     fps = counter / (current_time - startTime)
                     counter = 0
                     startTime = current_time
+
+                disp_cnt += 1
+                show_frame = (disp_cnt % 2) == 0
 
                 frame = inPreview.getCvFrame()
 
@@ -282,65 +290,68 @@ class RobotHead(Node):
                     self.posePublisher.publish(msg)
                     pose_last = pose;
 
-                # Display Human pose
-                try:
-                    if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
-                        for i in range(18):
-                            for j in range(len(detected_keypoints[i])):
-                                cv2.circle(frame, detected_keypoints[i][j][0:2], 5, colors[i], -1, cv2.LINE_AA)
-                        for i in range(17):
-                            for n in range(len(personwiseKeypoints)):
-                                index = personwiseKeypoints[n][np.array(POSE_PAIRS[i])]
-                                if -1 in index:
-                                    continue
-                                B = np.int32(keypoints_list[index.astype(int), 0])
-                                A = np.int32(keypoints_list[index.astype(int), 1])
-                                cv2.line(frame, (B[0], A[0]), (B[1], A[1]), colors[i], 3, cv2.LINE_AA)
-                except:
-                    print("keypoint out of bound")
-
-                flipped = cv2.flip(frame, 1)
-
-                # Display detections
-                for detection in detections:
+                if show_frame:
+                    # Display Human pose
                     try:
-                        label = labelMap[detection.label]
+                        if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
+                            for i in range(18):
+                                for j in range(len(detected_keypoints[i])):
+                                    cv2.circle(frame, detected_keypoints[i][j][0:2], 5, colors[i], -1, cv2.LINE_AA)
+                            for i in range(17):
+                                for n in range(len(personwiseKeypoints)):
+                                    index = personwiseKeypoints[n][np.array(POSE_PAIRS[i])]
+                                    if -1 in index:
+                                        continue
+                                    B = np.int32(keypoints_list[index.astype(int), 0])
+                                    A = np.int32(keypoints_list[index.astype(int), 1])
+                                    cv2.line(frame, (B[0], A[0]), (B[1], A[1]), colors[i], 3, cv2.LINE_AA)
                     except:
-                        label = detection.label
-                    if label != 'person':
-                        continue
+                        print("keypoint out of bound")
 
-                    # Denormalize bounding box
-                    x1 = int(detection.xmin * width)
-                    x2 = int(detection.xmax * width)
-                    y1 = int(detection.ymin * height)
-                    y2 = int(detection.ymax * height)
-                    font_scale = 0.4
-                    cv2.putText(flipped, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                    cv2.putText(flipped, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                    cv2.putText(flipped, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                    cv2.putText(flipped, f"Y: {int(detection.spatialCoordinates.y)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                    cv2.putText(flipped, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                    flipped = cv2.flip(frame, 1)
 
-                    # Fix - handle multiple persons
-                    if pose_last is not None and label == 'person':
-                        cv2.putText(flipped, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        cv2.putText(flipped, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                    # Display detections
+                    for detection in detections:
+                        try:
+                            label = labelMap[detection.label]
+                        except:
+                            label = detection.label
+                        if label != 'person':
+                            continue
 
-                    cv2.rectangle(flipped, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+                        # Denormalize bounding box
+                        x2 = int((1.0 - detection.xmin) * width)
+                        x1 = int((1.0 - detection.xmax) * width)
+                        #x1 = int(detection.xmin * width)
+                        #x2 = int(detection.xmax * width)
+                        y1 = int(detection.ymin * height)
+                        y2 = int(detection.ymax * height)
+                        font_scale = 0.4
+                        cv2.putText(flipped, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        #cv2.putText(flipped, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        # ROS coords
+                        cv2.putText(flipped, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)} mm",
+                                    (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
-                cv2.putText(flipped, "NN fps: {:.2f}".format(fps), (2, flipped.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                        # Fix - handle multiple persons
+                        if pose_last is not None and label == 'person':
+                            cv2.putText(flipped, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                            cv2.putText(flipped, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+
+                        cv2.rectangle(flipped, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+
+                    cv2.putText(flipped, "NN fps: {:.2f}".format(fps), (2, flipped.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+
+                    resized = cv2.resize(flipped, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
+                    cv2.imshow("rgb", resized)
+                    if self.setWinPos:
+                        self.setWinPos = False
+                        cv2.moveWindow("rgb", 78, 30)
+
+                    self.imagePub.publish(self.bridge.cv2_to_imgmsg(flipped, "bgr8"))
 
                 if show_depth:
                     cv2.imshow("depth", depthFrameColor)
-
-                resized = cv2.resize(flipped, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
-                cv2.imshow("rgb", resized)
-                if self.setWinPos:
-                    self.setWinPos = False
-                    cv2.moveWindow("rgb", 78, 30)
-
-                self.imagePub.publish(self.bridge.cv2_to_imgmsg(flipped, "bgr8"))
 
                 if cv2.waitKey(1) == ord('q'):
                     break
@@ -417,8 +428,8 @@ class RobotHead(Node):
                 return
 
             self.pose_cnt += 1
-            #if (self.pose_cnt % 2) == 0:
-            if True:
+            if (self.pose_cnt % 2) == 0:
+            #if True:
                 #fps.tick('nn')
                 heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
                 pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))

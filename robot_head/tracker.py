@@ -104,7 +104,7 @@ class CameraServo:
 
         self.servo_pos = 0
         # Steps per position adjustment
-        self.servo_step = 1
+        self.servo_step = 0.75
         self.set_servo_pos(self.servo_midpos)
 
         self.obj_ave = 0.0
@@ -115,7 +115,9 @@ class CameraServo:
     def is_at_servo_limit(self):
         return  self.servo_pos == self.servo_minpos or self.servo_pos == self.servo_maxpos
 
-    def set_servo_pos(self, pos):
+    def set_servo_pos(self, pos_in):
+
+        pos = int(pos_in)
         if pos < self.servo_minpos:
             pos = self.servo_minpos
         elif pos > self.servo_maxpos:
@@ -123,7 +125,7 @@ class CameraServo:
 
         global servo_kit
         servo_kit.servo[self.chan].angle = pos
-        self.servo_pos = pos
+        self.servo_pos = pos_in
         #print("Set servo pos %d" % pos)
 
     def get_servo_degrees(self):
@@ -141,7 +143,7 @@ class CameraServo:
             else:
                 pos = obj['y_min']
 
-            self.obj_ave = self.obj_ave*0.5 + pos*0.5
+            self.obj_ave = self.obj_ave*0.3 + pos*0.7
             self.obj_last_pos = pos
 
             if self.joint == "pan":
@@ -156,10 +158,10 @@ class CameraServo:
                     self.obj_last_dir = 0
             else:
                 # Try to keep top of object (person) in view
-                if self.obj_ave > 0.3:
+                if self.obj_ave > 0.4:
                     self.set_servo_pos(self.servo_pos - self.servo_step)
                     self.obj_last_dir = -1
-                elif self.obj_ave < 0.1:
+                elif self.obj_ave < 0.2:
                     self.set_servo_pos(self.servo_pos + self.servo_step)
                     self.obj_last_dir = 1
                 else:

@@ -71,7 +71,7 @@ def pose_from_angles(s, e):
             return "OnHip"
         #elif s > -15 and s < 15 and e > 130 and e < 150:
         #    return "TouchingEar"
-        elif s > -30 and s < 30 and e > -20 and e < 20:
+        elif s > -30 and s < 30 and e > -45 and e < 45:
             return "ArmOut"
         elif s > -100 and s < -55 and e > -30 and e < 30:
             return "ArmToSide"
