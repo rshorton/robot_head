@@ -113,7 +113,7 @@ class CameraServo:
         self.obj_timeout_cnt = -1
 
     def is_at_servo_limit(self):
-        return  self.servo_pos == self.servo_minpos or self.servo_pos == self.servo_maxpos
+        return  self.servo_pos <= self.servo_minpos + self.servo_step or self.servo_pos >= self.servo_maxpos - self.servo_step
 
     def set_servo_pos(self, pos_in):
 
@@ -200,14 +200,21 @@ class CameraTracker:
             Smile,
             '/head/smile',
             self.smile_callback,
-            10)
+            2)
         self.sub_smile  # prevent unused variable warning
+
+        self.sub_track = node.create_subscription(
+            Smile,
+            '/head/track',
+            self.track_callback,
+            2)
+        self.sub_track  # prevent unused variable warning
 
         self.sub_head_tilt = node.create_subscription(
             HeadTilt,
             '/head/tilt',
             self.head_tilt_callback,
-            10)
+            2)
         self.sub_head_tilt  # prevent unused variable warning
 
         self.smile_mode_def = "smile"
@@ -226,6 +233,9 @@ class CameraTracker:
         self.smile_cmd_duration_ms = 0
 
         self.set_smile()
+
+        self.track_cmd_mode = "Track"
+        self.track_rate = "Medium"
 
         self.head_tilt_cmd_angle = None
         self.head_tilt_steps = 0
@@ -344,6 +354,11 @@ class CameraTracker:
         if msg.use_as_default == True:
             self.smile_mode_def = msg.mode
             self.smile_level_def = msg.level
+
+    def track_callback(self, msg):
+        self.node.get_logger().info('Received track msg: mode: %s, level: %d, duration: %d, def: %s' % (msg.mode, msg.rate))
+        self.track_cmd_mode = msg.mode
+        self.track_rate = msg.rate
 
     def set_smile(self):
         for i in range(0, len(self.smile_leds)):
