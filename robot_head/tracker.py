@@ -115,8 +115,10 @@ class CameraServo:
     def is_at_servo_limit(self):
         return  self.servo_pos <= self.servo_minpos + self.servo_step or self.servo_pos >= self.servo_maxpos - self.servo_step
 
-    def set_servo_pos(self, pos_in):
+    def is_at_midpos(self):
+        return  self.servo_pos == self.midpos
 
+    def set_servo_pos(self, pos_in):
         pos = int(pos_in)
         if pos < self.servo_minpos:
             pos = self.servo_minpos
@@ -132,6 +134,11 @@ class CameraServo:
         deg = self.servo_pos*self.servo_degrees_per_step - self.servo_mid_degrees
         #print("servo pos: %d -> degrees: %f" % (self.servo_pos, deg))
         return deg
+
+    def stop_tracking(self):
+        self.obj_last_dir = 0
+        self.obj_timeout_cnt = -1
+        self.set_servo_pos(self.servo_midpos)
 
     # Update the pan-tilt base
     def update(self, obj):
@@ -236,6 +243,7 @@ class CameraTracker:
 
         self.track_cmd_mode = "Track"
         self.track_rate = "Medium"
+        self.track_new_mode = None
 
         self.head_tilt_cmd_angle = None
         self.head_tilt_steps = 0
@@ -279,6 +287,15 @@ class CameraTracker:
         self.broadcast_camera_joints()
 
     def process_detections(self, objListTrack):
+        if self.track_new_mode != None:
+            if self.track_new_mode == 'Off':
+                self.servo_pan.stop_tracking()
+                self.servo_tilt.stop_tracking()
+            self.track_cmd_mode = self.track_new_mode
+
+        if self.track_cmd_mode != "Track":
+            return
+
         pan_pos = self.servo_pan.servo_pos
         tilt_pos = self.servo_tilt.servo_pos
 
@@ -357,7 +374,7 @@ class CameraTracker:
 
     def track_callback(self, msg):
         self.node.get_logger().info('Received track msg: mode: %s, rate: %s' % (msg.mode, msg.rate))
-        self.track_cmd_mode = msg.mode
+        self.track_new_mode = msg.mode
         self.track_rate = msg.rate
 
     def set_smile(self):
