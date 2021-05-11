@@ -7,7 +7,7 @@ from rclpy.node import Node
 
 from std_msgs.msg import String
 
-from face_control_interfaces.msg import Smile, HeadTilt
+from face_control_interfaces.msg import Smile, HeadTilt, Track
 
 # Used for publishing the camera joint positions
 from sensor_msgs.msg import JointState
@@ -204,7 +204,7 @@ class CameraTracker:
         self.sub_smile  # prevent unused variable warning
 
         self.sub_track = node.create_subscription(
-            Smile,
+            Track,
             '/head/track',
             self.track_callback,
             2)
@@ -356,7 +356,7 @@ class CameraTracker:
             self.smile_level_def = msg.level
 
     def track_callback(self, msg):
-        self.node.get_logger().info('Received track msg: mode: %s, level: %d, duration: %d, def: %s' % (msg.mode, msg.rate))
+        self.node.get_logger().info('Received track msg: mode: %s, rate: %s' % (msg.mode, msg.rate))
         self.track_cmd_mode = msg.mode
         self.track_rate = msg.rate
 
