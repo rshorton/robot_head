@@ -1,6 +1,7 @@
 import os
 import os.path
 from os import path
+from math import copysign
 
 import rclpy
 from rclpy.node import Node
@@ -70,33 +71,33 @@ class CameraServo:
             self.chan = 12
 
             # Min/max/mid positions determined by experiment
-            self.servo_minpos = 0
+            self.servo_minpos = 10
             self.servo_maxpos = 170
-            self.servo_midpos = 78
+            self.servo_midpos = 87
 
             # Approx angle measurements for the above positions
-            self.servo_degrees_per_step = (57.0 + 65.0)/(self.servo_maxpos - self.servo_minpos)
-            self.servo_mid_degrees = 57.0
+            self.servo_degrees_per_step = (58.0 + 59.0)/(self.servo_maxpos - self.servo_minpos)
+            #self.servo_mid_degrees = 57.0
 
         elif joint == "tilt":
             self.chan = 13
 
-            self.servo_minpos = 0
-            self.servo_maxpos = 80
-            self.servo_midpos = 40
+            self.servo_minpos = 5
+            self.servo_maxpos = 142
+            self.servo_midpos = 26
 
-            self.servo_degrees_per_step = (14.0 + 51.0)/(self.servo_maxpos - self.servo_minpos)
-            self.servo_mid_degrees = 14.0
+            self.servo_degrees_per_step = (15.0 + 90.0)/(self.servo_maxpos - self.servo_minpos)
+            #self.servo_mid_degrees = 14.0
 
         elif joint == "rotate":
             self.chan = 14
 
             self.servo_minpos = 0
-            self.servo_maxpos = 170
-            self.servo_midpos = 85
+            self.servo_maxpos = 150
+            self.servo_midpos = 90
 
-            self.servo_degrees_per_step = (57.0 + 65.0)/(self.servo_maxpos - self.servo_minpos)
-            self.servo_mid_degrees = 57.0
+            self.servo_degrees_per_step = (40.0 + 65.0)/(self.servo_maxpos - self.servo_minpos)
+            #self.servo_mid_degrees = 57.0
 
         else:
             print("Invalid camera joint: %s" % joint)
@@ -111,6 +112,7 @@ class CameraServo:
         self.obj_last_dir = 0
         self.obj_last_pos = 0.0
         self.obj_timeout_cnt = -1
+        self.go_center = False
 
     def is_at_servo_limit(self):
         return  self.servo_pos <= self.servo_minpos + self.servo_step or self.servo_pos >= self.servo_maxpos - self.servo_step
@@ -128,10 +130,10 @@ class CameraServo:
         global servo_kit
         servo_kit.servo[self.chan].angle = pos
         self.servo_pos = pos_in
-        #print("Set servo pos %d" % pos)
+        print("Set servo pos %d" % pos)
 
     def get_servo_degrees(self):
-        deg = self.servo_pos*self.servo_degrees_per_step - self.servo_mid_degrees
+        deg = (self.servo_pos - self.servo_midpos)*self.servo_degrees_per_step
         #print("servo pos: %d -> degrees: %f" % (self.servo_pos, deg))
         return deg
 
@@ -155,14 +157,27 @@ class CameraServo:
 
             if self.joint == "pan":
                 # Try to object in center of left-right view
-                if self.obj_ave > 0.6:
-                    self.set_servo_pos(self.servo_pos - self.servo_step)
-                    self.obj_last_dir = -1
+                factor = 0.0
+                if self.obj_ave > 0.9:
+                    factor = 6.0
+                elif self.obj_ave > 0.8:
+                    factor = 5.0
+                elif self.obj_ave > 0.7:
+                    factor = 3.0
+                elif self.obj_ave > 0.6:
+                    factor = 1.0
+                elif self.obj_ave < 0.1:
+                    factor = -6.0
+                elif self.obj_ave < 0.2:
+                    factor = -5.0
+                elif self.obj_ave < 0.3:
+                    factor = -3.0
                 elif self.obj_ave < 0.4:
-                    self.set_servo_pos(self.servo_pos + self.servo_step)
-                    self.obj_last_dir = 1
-                else:
-                    self.obj_last_dir = 0
+                    factor = -1.0
+
+                self.set_servo_pos(self.servo_pos - factor*self.servo_step)
+                self.obj_last_dir = -1*factor
+
             else:
                 # Try to keep top of object (person) in view
                 if self.obj_ave > 0.4:
@@ -175,14 +190,14 @@ class CameraServo:
                     self.obj_last_dir = 0
 
             self.obj_timeout_cnt = 0
+            self.go_center = False
         else:
             # No object visible now.
             # If was tracking on last update, then continue moving in that
             # direction to try and catch up.  If the limit is reached, then
             # return to center after a timeout. If wasn't tracking before,
             # then return to center after a timeout.
-            go_center = False
-            if self.obj_last_dir != 0:
+            if False: #self.obj_last_dir != 0:
                 self.set_servo_pos(self.servo_pos + self.obj_last_dir*self.servo_step)
                 self.obj_timeout_cnt = 0
                 if self.is_at_servo_limit():
@@ -192,10 +207,11 @@ class CameraServo:
                 if self.obj_timeout_cnt > 30:
                     self.obj_last_dir = 0
                     self.obj_timeout_cnt = -1
-                    go_center = True
+                    self.go_center = True
 
-            if go_center:
-                self.set_servo_pos(self.servo_midpos)
+            if self.go_center:
+                if self.servo_pos != self.servo_midpos:
+                    self.set_servo_pos(self.servo_pos + copysign(1, self.servo_midpos - self.servo_pos))
 
 class CameraTracker:
     def __init__(self, node):
