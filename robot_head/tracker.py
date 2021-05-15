@@ -130,7 +130,7 @@ class CameraServo:
         global servo_kit
         servo_kit.servo[self.chan].angle = pos
         self.servo_pos = pos_in
-        print("Set servo pos %d" % pos)
+        #print("Set servo pos %d" % pos)
 
     def get_servo_degrees(self):
         deg = (self.servo_pos - self.servo_midpos)*self.servo_degrees_per_step
@@ -152,28 +152,30 @@ class CameraServo:
             else:
                 pos = obj['y_min']
 
-            self.obj_ave = self.obj_ave*0.3 + pos*0.7
+            self.obj_ave = self.obj_ave*0.7 + pos*0.3
             self.obj_last_pos = pos
+
+            #print('Joint: %s, ave= %f, pos_in= %f' % (self.joint, self.obj_ave, pos))
 
             if self.joint == "pan":
                 # Try to object in center of left-right view
                 factor = 0.0
                 if self.obj_ave > 0.9:
-                    factor = 6.0
+                    factor = -8.0
                 elif self.obj_ave > 0.8:
-                    factor = 5.0
-                elif self.obj_ave > 0.7:
-                    factor = 3.0
-                elif self.obj_ave > 0.6:
-                    factor = 1.0
-                elif self.obj_ave < 0.1:
                     factor = -6.0
-                elif self.obj_ave < 0.2:
-                    factor = -5.0
-                elif self.obj_ave < 0.3:
-                    factor = -3.0
-                elif self.obj_ave < 0.4:
+                elif self.obj_ave > 0.7:
+                    factor = -4.0
+                elif self.obj_ave > 0.6:
                     factor = -1.0
+                elif self.obj_ave < 0.1:
+                    factor = 8.0
+                elif self.obj_ave < 0.2:
+                    factor = 6.0
+                elif self.obj_ave < 0.3:
+                    factor = 4.0
+                elif self.obj_ave < 0.4:
+                    factor = 1.0
 
                 self.set_servo_pos(self.servo_pos - factor*self.servo_step)
                 self.obj_last_dir = -1*factor
@@ -258,6 +260,7 @@ class CameraTracker:
         self.set_smile()
 
         self.track_cmd_mode = "Track"
+#        self.track_cmd_mode = "None"
         self.track_rate = "Medium"
         self.track_new_mode = None
 
