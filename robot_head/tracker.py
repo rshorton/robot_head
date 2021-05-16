@@ -72,21 +72,23 @@ class CameraServo:
 
             # Min/max/mid positions determined by experiment
             self.servo_minpos = 10
+            self.servo_maxpos_cal = 170
             self.servo_maxpos = 170
             self.servo_midpos = 87
 
             # Approx angle measurements for the above positions
-            self.servo_degrees_per_step = (58.0 + 59.0)/(self.servo_maxpos - self.servo_minpos)
+            self.servo_degrees_per_step = (58.0 + 59.0)/(self.servo_maxpos_cal - self.servo_minpos)
             #self.servo_mid_degrees = 57.0
 
         elif joint == "tilt":
             self.chan = 13
 
             self.servo_minpos = 5
-            self.servo_maxpos = 142
+            self.servo_maxpos_cal = 142
+            self.servo_maxpos = 80
             self.servo_midpos = 26
 
-            self.servo_degrees_per_step = (15.0 + 90.0)/(self.servo_maxpos - self.servo_minpos)
+            self.servo_degrees_per_step = (15.0 + 90.0)/(self.servo_maxpos_cal - self.servo_minpos)
             #self.servo_mid_degrees = 14.0
 
         elif joint == "rotate":
@@ -121,16 +123,19 @@ class CameraServo:
         return  self.servo_pos == self.midpos
 
     def set_servo_pos(self, pos_in):
+        if pos_in < self.servo_minpos:
+            pos_in = self.servo_minpos
+        elif pos_in > self.servo_maxpos:
+            pos_in = self.servo_maxpos
+
         pos = int(pos_in)
-        if pos < self.servo_minpos:
-            pos = self.servo_minpos
-        elif pos > self.servo_maxpos:
-            pos = self.servo_maxpos
 
         global servo_kit
         servo_kit.servo[self.chan].angle = pos
         self.servo_pos = pos_in
-        #print("Set servo pos %d" % pos)
+
+        #if self.joint == 'tilt':
+        #    print("Set servo pos %s %d %d" % (self.joint, pos, pos_in))
 
     def get_servo_degrees(self):
         deg = (self.servo_pos - self.servo_midpos)*self.servo_degrees_per_step
@@ -155,11 +160,13 @@ class CameraServo:
             self.obj_ave = self.obj_ave*0.7 + pos*0.3
             self.obj_last_pos = pos
 
-            #print('Joint: %s, ave= %f, pos_in= %f' % (self.joint, self.obj_ave, pos))
+            #if self.joint == 'tilt':
+            #    print('Joint: %s, ave= %f, pos_in= %f' % (self.joint, self.obj_ave, pos))
+
+            factor = 0.0
 
             if self.joint == "pan":
                 # Try to object in center of left-right view
-                factor = 0.0
                 if self.obj_ave > 0.9:
                     factor = -8.0
                 elif self.obj_ave > 0.8:
@@ -176,20 +183,22 @@ class CameraServo:
                     factor = 4.0
                 elif self.obj_ave < 0.4:
                     factor = 1.0
-
-                self.set_servo_pos(self.servo_pos - factor*self.servo_step)
-                self.obj_last_dir = -1*factor
-
             else:
                 # Try to keep top of object (person) in view
-                if self.obj_ave > 0.4:
-                    self.set_servo_pos(self.servo_pos - self.servo_step)
-                    self.obj_last_dir = -1
+                if self.obj_ave > 0.6:
+                    factor = 5.0
+                elif self.obj_ave > 0.4:
+                    factor = 4.0
+                elif self.obj_ave > 0.3:
+                    factor = 1.0
+                elif self.obj_ave < 0.1:
+                    factor = -3.0
                 elif self.obj_ave < 0.2:
-                    self.set_servo_pos(self.servo_pos + self.servo_step)
-                    self.obj_last_dir = 1
-                else:
-                    self.obj_last_dir = 0
+                    factor = -2.0
+
+                #print('factor: %f' % factor)
+            self.set_servo_pos(self.servo_pos - factor*self.servo_step)
+            self.obj_last_dir = -1*factor
 
             self.obj_timeout_cnt = 0
             self.go_center = False
@@ -289,6 +298,8 @@ class CameraTracker:
     def broadcast_camera_joints(self):
         cam_pan_rad = self.servo_pan.get_servo_degrees()/180.0*PI
         cam_tilt_rad = -1.0*self.servo_tilt.get_servo_degrees()/180.0*PI
+
+        #print("Joint states, pan,tilt: %f  %f" % (cam_pan_rad, cam_tilt_rad))
 
         now = self.node.get_clock().now()
         joint_state = JointState()
@@ -447,7 +458,7 @@ class CameraTracker:
         if self.smile_delta != 0:
             #print("smile_delta != 0, delta= %d" % self.smile_delta)
 
-            self.smile_level += self.smile_delta
+            self.smile_level = min(self.smile_level + self.smile_delta, len(smile_patterns) - 1)
             self.smile_leds = smile_patterns[self.smile_level]
             self.set_smile()
 
