@@ -48,6 +48,8 @@ pose = None
 
 syncNN = True
 
+min_track_confidence = 0.80
+
 keypoints_list = None
 detected_keypoints = None
 personwiseKeypoints = None
@@ -425,7 +427,7 @@ class RobotHead(Node):
                             x1 = widthRGB - swap
                         font_scale = 0.4
                         cv2.putText(frameRGB, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        #cv2.putText(frameRGB, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(frameRGB, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
                         # ROS coords
                         cv2.putText(frameRGB, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x*detectXScale)}, {int(detection.spatialCoordinates.y)} mm",
                                     (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
@@ -474,6 +476,7 @@ class RobotHead(Node):
             desc = ObjectDesc()
             desc.id = detection.label
             desc.name = label
+            desc.confidence = detection.confidence
             # Map to ROS convention
             desc.x = detection.spatialCoordinates.z
             # Scale since detections are running on a distorted 640 wide image
@@ -484,7 +487,7 @@ class RobotHead(Node):
 
             # Add to a list used by pan-tilt tracking if the object we
             # want to track
-            if label == 'person':
+            if label == 'person' and detection.confidence > min_track_confidence:
                 obj = {}
                 obj['name'] = label
                 obj['x'] = desc.x
