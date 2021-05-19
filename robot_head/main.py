@@ -472,6 +472,9 @@ class RobotHead(Node):
             except:
                 label = detection.label
 
+            if (label == 'person' and (detection.xmax - detection.xmin) > 0.7):
+                continue
+
             #print(detection)
             desc = ObjectDesc()
             desc.id = detection.label
@@ -521,8 +524,8 @@ class RobotHead(Node):
                 return
 
             self.pose_cnt += 1
-            if (self.pose_cnt % 2) == 0:
-            #if True:
+            #if (self.pose_cnt % 2) == 0:
+            if True:
                 #fps.tick('nn')
                 heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
                 pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))

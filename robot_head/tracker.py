@@ -1,3 +1,7 @@
+import threading
+import sys
+import time
+
 import os
 import os.path
 from os import path
@@ -270,8 +274,10 @@ class CameraTracker:
 
         self.track_cmd_mode = "Track"
 #        self.track_cmd_mode = "None"
-        self.track_rate = "Medium"
+        self.track_rate = 0
         self.track_new_mode = None
+        self.track_new_level = 0
+        self.last_track_mode = None
 
         self.head_tilt_cmd_angle = None
         self.head_tilt_steps = 0
@@ -282,15 +288,31 @@ class CameraTracker:
         self.servo_tilt = CameraServo("tilt")
         self.servo_head_tilt = CameraServo("rotate")
 
+        self.tilt_scan_pos = self.servo_tilt.servo_midpos - 5
+        self.scan_left = True
+        self.scan_step = 4
+
          # Publisher for states of the pan-tilt joints
         qos_profile = QoSProfile(depth=10)
         self.joint_pub = node.create_publisher(JointState, 'joint_states', qos_profile)
 
-#        self.timer = self.create_timer(0.2, self.timer_callback)
-
         self.smile_timer = self.node.create_timer(0.1, self.smile_timer_callback)
 
-        self.head_tilt_timer = self.node.create_timer(0.1, self.head_tilt_timer_callback)
+        self.thread = threading.Thread(target=self.tracker_thread)
+        self.thread.start()
+
+    def tracker_thread(self):
+        tilt_cnt = 0
+        while True:
+            time.sleep(0.05)
+
+            tilt_cnt += 1
+            if tilt_cnt >= 2:
+                tilt_cnt = 0
+                self.head_tilt_timer_callback()
+
+            self.head_scan_timer_callback()
+            self.broadcast_camera_joints()
 
     # Broadcast the pan-tilt joints so ROS TF can be used to tranform positions
     # in the camera frame to other frames such as the map frame when navigating.
@@ -308,13 +330,13 @@ class CameraTracker:
         joint_state.position = [cam_tilt_rad, cam_pan_rad]
         self.joint_pub.publish(joint_state)
 
-    def update_camera_pos(self, obj):
-        pan_pos = self.servo_pan.servo_pos
-        tilt_pos = self.servo_tilt.servo_pos
-
-        self.servo_pan.update(obj)
-        self.servo_tilt.update(obj)
-        self.broadcast_camera_joints()
+    # def update_camera_pos(self, obj):
+    #     pan_pos = self.servo_pan.servo_pos
+    #     tilt_pos = self.servo_tilt.servo_pos
+    #
+    #     self.servo_pan.update(obj)
+    #     self.servo_tilt.update(obj)
+    #     self.broadcast_camera_joints()
 
     def process_detections(self, objListTrack):
         if self.track_new_mode != None:
@@ -322,28 +344,51 @@ class CameraTracker:
                 self.servo_pan.stop_tracking()
                 self.servo_tilt.stop_tracking()
             self.track_cmd_mode = self.track_new_mode
+            self.track_new_mode = None
 
-        if self.track_cmd_mode != "Track":
-            return
+        if self.track_cmd_mode == "Track":
+            self.last_track_mode = self.track_cmd_mode
 
-        pan_pos = self.servo_pan.servo_pos
-        tilt_pos = self.servo_tilt.servo_pos
+            pan_pos = self.servo_pan.servo_pos
+            tilt_pos = self.servo_tilt.servo_pos
 
-        closest_obj = None
+            closest_obj = None
 
-        cnt = len(objListTrack)
-        if cnt > 0:
-            for obj in objListTrack:
-                if closest_obj != None:
-                    # x is according to ROS conventions (pointing away from camera)
-                    if closest_obj['x'] >  obj['x']:
+            cnt = len(objListTrack)
+            if cnt > 0:
+                for obj in objListTrack:
+                    if closest_obj != None:
+                        # x is according to ROS conventions (pointing away from camera)
+                        if closest_obj['x'] >  obj['x']:
+                            closest_obj = obj
+                    else:
                         closest_obj = obj
-                else:
-                    closest_obj = obj
 
-        self.servo_pan.update(closest_obj)
-        self.servo_tilt.update(closest_obj)
-        self.broadcast_camera_joints()
+            self.servo_pan.update(closest_obj)
+            self.servo_tilt.update(closest_obj)
+            self.broadcast_camera_joints()
+
+    # Move the hand in a left-to-right scanning motion
+    def update_scan(self, init):
+        if init:
+            self.scan_left = True
+            self.servo_tilt.set_servo_pos(self.tilt_scan_pos)
+
+        if self.scan_left:
+            if self.servo_pan.servo_pos > self.servo_pan.servo_minpos:
+                self.servo_pan.set_servo_pos(self.servo_pan.servo_pos - self.scan_step)
+            else:
+                self.scan_left = False
+        else:
+            if self.servo_pan.servo_pos < self.servo_pan.servo_maxpos:
+                self.servo_pan.set_servo_pos(self.servo_pan.servo_pos + self.scan_step)
+            else:
+                self.scan_left = True
+
+    def head_scan_timer_callback(self):
+        if self.track_cmd_mode == "Scan":
+            self.update_scan(self.last_track_mode != "Scan")
+            self.last_track_mode = self.track_cmd_mode
 
     def head_tilt_timer_callback(self):
         self.update_head_tilt()
@@ -405,7 +450,8 @@ class CameraTracker:
     def track_callback(self, msg):
         self.node.get_logger().info('Received track msg: mode: %s, rate: %s' % (msg.mode, msg.rate))
         self.track_new_mode = msg.mode
-        self.track_rate = msg.rate
+        if msg.mode == "Scan":
+            self.scan_step = int(msg.rate)
 
     def set_smile(self):
         for i in range(0, len(self.smile_leds)):
