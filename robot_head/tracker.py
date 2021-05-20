@@ -12,7 +12,7 @@ from rclpy.node import Node
 
 from std_msgs.msg import String
 
-from face_control_interfaces.msg import Smile, HeadTilt, Track
+from face_control_interfaces.msg import Smile, HeadTilt, Track, ScanStatus
 
 # Used for publishing the camera joint positions
 from sensor_msgs.msg import JointState
@@ -255,6 +255,12 @@ class CameraTracker:
             2)
         self.sub_head_tilt  # prevent unused variable warning
 
+         # Publisher for states of the pan-tilt joints
+        qos_profile = QoSProfile(depth=10)
+        self.pub_joint = node.create_publisher(JointState, 'joint_states', qos_profile)
+
+        self.pub_scan_status = node.create_publisher(ScanStatus, '/head/scan_status', qos_profile)
+
         self.smile_mode_def = "smile"
         self.smile_level_def = 0
 
@@ -292,9 +298,8 @@ class CameraTracker:
         self.scan_left = True
         self.scan_step = 4
 
-         # Publisher for states of the pan-tilt joints
-        qos_profile = QoSProfile(depth=10)
-        self.joint_pub = node.create_publisher(JointState, 'joint_states', qos_profile)
+        self.scan_at_left_count = 0
+        self.scan_at_right_count = 0
 
         self.smile_timer = self.node.create_timer(0.1, self.smile_timer_callback)
 
@@ -328,7 +333,7 @@ class CameraTracker:
         joint_state.header.stamp = now.to_msg()
         joint_state.name = ['cam_tilt_joint', 'cam_pan_joint']
         joint_state.position = [cam_tilt_rad, cam_pan_rad]
-        self.joint_pub.publish(joint_state)
+        self.pub_joint.publish(joint_state)
 
     # def update_camera_pos(self, obj):
     #     pan_pos = self.servo_pan.servo_pos
@@ -345,6 +350,7 @@ class CameraTracker:
                 self.servo_tilt.stop_tracking()
             self.track_cmd_mode = self.track_new_mode
             self.track_new_mode = None
+            self.publish_scan_status()
 
         if self.track_cmd_mode == "Track":
             self.last_track_mode = self.track_cmd_mode
@@ -375,20 +381,32 @@ class CameraTracker:
             self.servo_tilt.set_servo_pos(self.tilt_scan_pos)
 
         if self.scan_left:
-            if self.servo_pan.servo_pos > self.servo_pan.servo_minpos:
-                self.servo_pan.set_servo_pos(self.servo_pan.servo_pos - self.scan_step)
-            else:
-                self.scan_left = False
-        else:
             if self.servo_pan.servo_pos < self.servo_pan.servo_maxpos:
                 self.servo_pan.set_servo_pos(self.servo_pan.servo_pos + self.scan_step)
             else:
+                self.scan_at_left_count += 1
+                self.scan_left = False
+        else:
+            if self.servo_pan.servo_pos > self.servo_pan.servo_minpos:
+                self.servo_pan.set_servo_pos(self.servo_pan.servo_pos - self.scan_step)
+            else:
+                self.scan_at_right_count += 1
                 self.scan_left = True
+
+    def publish_scan_status(self):
+        scan_status = ScanStatus()
+        scan_status.scanning = self.track_cmd_mode == "Scan"
+        scan_status.angle = int(self.servo_pan.get_servo_degrees())
+        scan_status.direction = 1 if self.scan_left else -1
+        scan_status.at_left_count = self.scan_at_left_count
+        scan_status.at_right_count = self.scan_at_right_count
+        self.pub_scan_status.publish(scan_status)
 
     def head_scan_timer_callback(self):
         if self.track_cmd_mode == "Scan":
             self.update_scan(self.last_track_mode != "Scan")
             self.last_track_mode = self.track_cmd_mode
+            self.publish_scan_status()
 
     def head_tilt_timer_callback(self):
         self.update_head_tilt()

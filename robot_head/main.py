@@ -300,7 +300,11 @@ class RobotHead(Node):
                 disp_cnt += 1
                 show_frame = (disp_cnt % 2) == 0
 
-                frameRGB = inPreviewRGB.getCvFrame()
+                try:
+                    frameRGB = inPreviewRGB.getCvFrame()
+                except:
+                    continue
+
                 self.h, self.w = frameRGB.shape[:2]  # 256, 456
 
                 detections = inNN.detections
@@ -442,11 +446,12 @@ class RobotHead(Node):
                     cv2.putText(frameRGB, "NN fps: {:.2f}".format(fps), (2, frameRGB.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
 
                     #frameRGB = cv2.resize(frameRGB, (int(456.0), int(256.0)), interpolation = cv2.INTER_AREA)
-                    frameRGB = cv2.resize(frameRGB, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
-                    cv2.imshow("rgb", frameRGB)
-                    if self.setWinPos:
-                        self.setWinPos = False
-                        cv2.moveWindow("rgb", 78, 30)
+                    #frameRGB = cv2.resize(frameRGB, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
+
+                    #cv2.imshow("rgb", frameRGB)
+                    #if self.setWinPos:
+                    #    self.setWinPos = False
+                    #    cv2.moveWindow("rgb", 78, 30)
 
                     self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameRGB, "bgr8"))
 
