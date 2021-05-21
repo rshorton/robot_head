@@ -348,6 +348,15 @@ class CameraTracker:
             if self.track_new_mode == 'Off':
                 self.servo_pan.stop_tracking()
                 self.servo_tilt.stop_tracking()
+            elif self.track_new_mode == "LookDown":
+                self.servo_pan.stop_tracking()
+                self.servo_tilt.stop_tracking()
+                self.servo_tilt.set_servo_pos(self.servo_tilt.servo_minpos)
+            elif self.track_new_mode == "Scan":
+                self.servo_tilt.set_servo_pos(self.servo_tilt.servo_midpos)
+            elif self.track_new_mode == "Track":
+                self.servo_tilt.set_servo_pos(self.servo_tilt.servo_midpos)
+
             self.track_cmd_mode = self.track_new_mode
             self.track_new_mode = None
             self.publish_scan_status()
