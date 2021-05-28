@@ -114,6 +114,7 @@ def get_empty_pose():
     pose["detected"] = False
     pose["left"] = "none"
     pose["right"] = "none"
+    pose["num_points"] = 0
     return pose
 
 def detect_pose(kp, pp_by_name):
@@ -121,6 +122,7 @@ def detect_pose(kp, pp_by_name):
     detected = False
     pose_r = "none"
     pose_l = "none"
+    cnt = 0
     if kp[pp_by_name['Nose']][0] != invalid_coord and kp[pp_by_name['Neck']][0] != invalid_coord:
         detected = True
         if debug:
@@ -131,12 +133,13 @@ def detect_pose(kp, pp_by_name):
 
         pose_l = detect_pose_side("Left", kp[pp_by_name['WrL']], kp[pp_by_name['ElbL']], kp[pp_by_name['ShoL']],
                          kp[pp_by_name['Nose']], kp[pp_by_name['Neck']]);
-
-
+        # Sum of valid keypoints (only care if neck and nose seen)
+        cnt = sum(p[0] != invalid_coord for p in kp)
     pose = {};
     pose["detected"] = detected
     pose["left"] = pose_l
     pose["right"] = pose_r
+    pose["num_points"] = int(cnt)
     return pose
 
 #    pose = detected + "," + pose_l + "," + pose_r

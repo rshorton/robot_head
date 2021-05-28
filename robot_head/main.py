@@ -28,7 +28,7 @@ from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 
 from pose import getKeypoints, getValidPairs, getPersonwiseKeypoints
-from tracker import CameraTracker
+#from tracker import CameraTracker
 from pose_interp import analyze_pose
 
 # Custom object detection messages
@@ -46,9 +46,9 @@ show_mono = False
 running = True
 pose = None
 
-syncNN = True
+syncNN = False
 
-min_track_confidence = 0.80
+#min_track_confidence = 0.50
 
 keypoints_list = None
 detected_keypoints = None
@@ -110,7 +110,9 @@ def create_pipeline():
 
     # Image manip
     manip = pipeline.createImageManip()
+
     manip.initialConfig.setResize(300, 300)
+
     # The NN model expects BGR input. By default ImageManip output type would be same as input (gray in this case)
     manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
     manip.setKeepAspectRatio(False)
@@ -120,7 +122,9 @@ def create_pipeline():
     # Define a neural network that will make predictions based on the source frames
     spatialDetectionNetwork = pipeline.createMobileNetSpatialDetectionNetwork()
     spatialDetectionNetwork.setConfidenceThreshold(0.5)
+
     spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
+
     spatialDetectionNetwork.input.setBlocking(False)
     spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
     spatialDetectionNetwork.setDepthLowerThreshold(100)
@@ -161,10 +165,7 @@ def create_pipeline():
     colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     colorCam.setInterleaved(False)
     colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    # Run at 18 fps but only display/publish/process pose as a fraction of that rate.
-    # This provides a faster update rate for the tracking function which is based on the
-    # detection nn output.
-    colorCam.setFps(18.0);
+    colorCam.setFps(10.0);
 
     if human_pose:
         # NeuralNetwork - human pose
@@ -228,7 +229,7 @@ class RobotHead(Node):
             self.pose_detect_enable_callback,
             1)
 
-        self.tracker = CameraTracker(self)
+        #self.tracker = CameraTracker(self)
 
         self.pose_cnt = 0
         # Needed for pose processing thread
@@ -268,12 +269,12 @@ class RobotHead(Node):
 
             disp_cnt = 0
 
-            flipMono = False
+            flipMono = True
             flipRGB = False
 
             # Rough scaling for converting bounding box relative to 300x300 right mono
             # as seen by detection, and the 456x256 color camera output. (Obtained
-            # by compare video.)
+            # by comparing frames.)
             bbXScale = 456.0/(291.0-28.0)
             bbYScale = 256.0/(274.0-39.0)
             bbXOffset = 28.0
@@ -283,12 +284,16 @@ class RobotHead(Node):
 
             while True:
 
-                rclpy.spin_once(self);
+                rclpy.spin_once(self, timeout_sec=0.001);
 
-                inPreviewRGB = previewQueueRGB.get()
-                if show_mono:
-                    inPreviewMono = previewQueueMono.get()
-                inNN = detectionNNQueue.get()
+                try:
+                    inPreviewRGB = previewQueueRGB.get()
+                    if show_mono:
+                        inPreviewMono = previewQueueMono.get()
+                    inNN = detectionNNQueue.get()
+                except:
+                    print("Failed to read from queue.")
+                    continue
 
                 counter+=1
                 current_time = time.monotonic()
@@ -303,6 +308,7 @@ class RobotHead(Node):
                 try:
                     frameRGB = inPreviewRGB.getCvFrame()
                 except:
+                    print("Failed to read preview frame")
                     continue
 
                 self.h, self.w = frameRGB.shape[:2]  # 256, 456
@@ -331,6 +337,16 @@ class RobotHead(Node):
                             ymax = int(bottomRight.y)
 
                             cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+
+                    if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
+                        for i in range(18):
+                            for j in range(len(detected_keypoints[i])):
+                                coords = detected_keypoints[i][j][0:2]
+                                x = int(coords[0]/456.0*640.0)
+                                y = int(coords[1]/256.0*400.0)
+                                cv2.circle(depthFrameColor, (x, y), 10 if i == 1 else 5, colors[i], -1, cv2.LINE_AA)
+
+
                     cv2.imshow("depth", depthFrameColor)
 
                 if show_mono:
@@ -367,10 +383,19 @@ class RobotHead(Node):
 
                         cv2.rectangle(frameMono, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
 
+                    if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
+                        for i in range(18):
+                            for j in range(len(detected_keypoints[i])):
+                                coords = detected_keypoints[i][j][0:2]
+                                x = int(coords[0]/bbXScale + bbXOffset)
+                                y = int(coords[1]/bbYScale + bbYOffset)
+                                cv2.circle(frameMono, (x, y), 10 if i == 1 else 5, colors[i], -1, cv2.LINE_AA)
+
                     cv2.putText(frameMono, "NN fps: {:.2f}".format(fps), (2, frameMono.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
                     cv2.imshow("Mono", frameMono)
 
                 # Publish and update tracker
+
                 self.process_detections(detections, 300, 300, detectXScale)
 
                 # Human pose detection processing
@@ -383,6 +408,7 @@ class RobotHead(Node):
                     msg.detected = pose["detected"]
                     msg.left = pose['left']
                     msg.right = pose['right']
+                    msg.num_points = pose['num_points']
                     self.posePublisher.publish(msg)
                     pose_last = pose;
 
@@ -395,7 +421,8 @@ class RobotHead(Node):
                         if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
                             for i in range(18):
                                 for j in range(len(detected_keypoints[i])):
-                                    cv2.circle(frameRGB, detected_keypoints[i][j][0:2], 5, colors[i], -1, cv2.LINE_AA)
+                                    cv2.circle(frameRGB, detected_keypoints[i][j][0:2], 10 if i == 1 else 5, colors[i], -1, cv2.LINE_AA)
+#                                    cv2.circle(frameRGB, detected_keypoints[i][j][0:2], 5, colors[i], -1, cv2.LINE_AA)
                             for i in range(17):
                                 for n in range(len(personwiseKeypoints)):
                                     index = personwiseKeypoints[n][np.array(POSE_PAIRS[i])]
@@ -477,6 +504,7 @@ class RobotHead(Node):
             except:
                 label = detection.label
 
+            # Hack to avoid false person detection of blank wall
             if (label == 'person' and (detection.xmax - detection.xmin) > 0.7):
                 continue
 
@@ -491,11 +519,17 @@ class RobotHead(Node):
             desc.y = -1*detection.spatialCoordinates.x*detectXScale
             desc.z = 0.0
             desc.c = 0
+            desc.x_min = detection.xmin
+            desc.x_max = detection.xmax
+            desc.y_min = detection.ymin
+            desc.y_max = detection.ymax
+
             objList += (desc,)
 
             # Add to a list used by pan-tilt tracking if the object we
             # want to track
-            if label == 'person' and detection.confidence > min_track_confidence:
+            if False:
+            #if label == 'person' and detection.confidence > min_track_confidence:
                 obj = {}
                 obj['name'] = label
                 obj['x'] = desc.x
@@ -513,7 +547,7 @@ class RobotHead(Node):
         self.objectPublisher.publish(msgObjects)
 
         # Update pan/tilt
-        self.tracker.process_detections(objListTrack)
+        #self.tracker.process_detections(objListTrack)
 
     def pose_thread(self, in_queue):
         global keypoints_list, detected_keypoints, personwiseKeypoints, new_pose
