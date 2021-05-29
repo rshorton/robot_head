@@ -1,16 +1,3 @@
-# Copyright 2016 Open Source Robotics Foundation, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import threading
 import sys
@@ -27,7 +14,6 @@ from rclpy.node import Node
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 
-from pose import getKeypoints, getValidPairs, getPersonwiseKeypoints
 #from tracker import CameraTracker
 from pose_interp import analyze_pose
 
@@ -37,11 +23,13 @@ from object_detection_msgs.msg import ObjectDesc
 
 from human_pose_interfaces.msg import DetectedPose, EnablePoseDetection
 
+import mediapipe_utils as mpu
+from BlazeposeDepthai import BlazeposeDepthai, to_planar
+
 human_pose = True
 human_pose_process = True
 
 show_depth = False
-show_mono = False
 
 running = True
 pose = None
@@ -49,17 +37,6 @@ pose = None
 syncNN = False
 
 #min_track_confidence = 0.50
-
-keypoints_list = None
-detected_keypoints = None
-personwiseKeypoints = None
-new_pose = False
-
-colors = [[0, 100, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 255], [0, 100, 255], [0, 255, 0],
-          [255, 200, 100], [255, 0, 255], [0, 255, 0], [255, 200, 100], [255, 0, 255], [0, 0, 255], [255, 0, 0],
-          [200, 200, 0], [255, 0, 0], [200, 200, 0], [0, 0, 0]]
-POSE_PAIRS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
-              [1, 0], [0, 14], [14, 16], [0, 15], [15, 17], [2, 17], [5, 16]]
 
 labelMap = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
             "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
@@ -70,34 +47,16 @@ def get_model_path(model_name):
 def create_pipeline():
     # Start defining a pipeline
     pipeline = dai.Pipeline()
-
-    ######################################################
-    # Detection
-    # mono left/right  400P
-    #    |        |
-    #    V        V
-    # --------------
-    #| Stereo Depth |
-    #|              |------|-----> to host (depth)
-    # --------------       |
-    #       | Rectified    | Depth
-    #       V Right        V
-    # --------------     ------------
-    # |Image Manip |     |MobileNet  |--> to host (detections)
-    # |300x300 rgb | --> |Spacial Det|--> to host (right - pass-thru image manip)
-    # |grey        |  |  |           |--> to host (boundingBoxDepthMapping)
-    # --------------  |  |-----------|
-    #                 |
-    #                 |--> to host (right)
+    pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_2)
 
     monoLeft = pipeline.createMonoCamera()
     monoRight = pipeline.createMonoCamera()
     monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
-    monoLeft.setFps(18.0);
+    monoLeft.setFps(10.0);
     monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
     monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-    monoLeft.setFps(18.0);
+    monoLeft.setFps(10.0);
 
     print("Mono res: %s" % str(monoRight.getResolutionSize()))
 
@@ -108,40 +67,41 @@ def create_pipeline():
     monoLeft.out.link(stereo.left)
     monoRight.out.link(stereo.right)
 
-    # Image manip
-    manip = pipeline.createImageManip()
+    # Color camera
+    colorCam = pipeline.createColorCamera()
+    colorCam.setPreviewSize(640, 360)
+    colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    colorCam.setInterleaved(False)
+    colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+    colorCam.setFps(10.0)
+    colorCam.setPreviewKeepAspectRatio(False)
 
-    manip.initialConfig.setResize(300, 300)
+    # Mobilenet SSD detection
+    # Use Image manip to size accordingly
+    manip_mn = pipeline.createImageManip()
+    manip_mn.initialConfig.setResize(300, 300)
+    manip_mn.setKeepAspectRatio(False)
+    colorCam.preview.link(manip_mn.inputImage)
 
-    # The NN model expects BGR input. By default ImageManip output type would be same as input (gray in this case)
-    manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
-    manip.setKeepAspectRatio(False)
-    # Its input
-    stereo.rectifiedRight.link(manip.inputImage)
-
-    # Define a neural network that will make predictions based on the source frames
     spatialDetectionNetwork = pipeline.createMobileNetSpatialDetectionNetwork()
     spatialDetectionNetwork.setConfidenceThreshold(0.5)
-
     spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
-
+    spatialDetectionNetwork.input.setQueueSize(1)
     spatialDetectionNetwork.input.setBlocking(False)
-    spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
+    spatialDetectionNetwork.setBoundingBoxScaleFactor(0.3)
     spatialDetectionNetwork.setDepthLowerThreshold(100)
-    spatialDetectionNetwork.setDepthUpperThreshold(5000)
+    spatialDetectionNetwork.setDepthUpperThreshold(10000)
     # Its inputs
-    manip.out.link(spatialDetectionNetwork.input)
+    manip_mn.out.link(spatialDetectionNetwork.input)
     stereo.depth.link(spatialDetectionNetwork.inputDepth)
 
     # Create outputs to the host
-
-    if show_mono:
-        xoutManip = pipeline.createXLinkOut()
-        xoutManip.setStreamName("right")
-        if syncNN:
-            spatialDetectionNetwork.passthrough.link(xoutManip.input)
-        else:
-            manip.out.link(xoutManip.input)
+    xoutRgb = pipeline.createXLinkOut()
+    xoutRgb.setStreamName("rgb")
+    if syncNN:
+        spatialDetectionNetwork.passthrough.link(xoutRgb.input)
+    else:
+        colorCam.preview.link(xoutRgb.input)
 
     depthRoiMap = pipeline.createXLinkOut()
     depthRoiMap.setStreamName("boundingBoxDepthMapping")
@@ -157,51 +117,54 @@ def create_pipeline():
     spatialDetectionNetwork.out.link(nnOut.input)
 
     ######################################################
-    # Human Pose Detection
-
-    # Color camera
-    colorCam = pipeline.createColorCamera()
-    colorCam.setPreviewSize(456, 256)
-    colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-    colorCam.setInterleaved(False)
-    colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    colorCam.setFps(10.0);
+    # Human Pose Detection, Blazepose
 
     if human_pose:
-        # NeuralNetwork - human pose
-        print("Creating Human Pose Estimation Neural Network...")
-
-        pose_nn = pipeline.createNeuralNetwork()
-        pose_nn.setBlobPath(get_model_path('human-pose-estimation-0001_openvino_2021.2_6shave.blob'))
-        # Increase threads for detection
-        # This slowed overall thru put
-        #pose_nn.setNumInferenceThreads(2)
-        pose_nn.setNumInferenceThreads(1)
-        # Specify that network takes latest arriving frame in non-blocking manner
-        pose_nn.input.setQueueSize(1)
-        pose_nn.input.setBlocking(False)
+        # Scale cam preview output for Blazepose person detector
+        manip_bp = pipeline.createImageManip()
+        manip_bp.initialConfig.setResize(128, 128)
+        manip_bp.setKeepAspectRatio(True)
         # Its input
-        colorCam.preview.link(pose_nn.input)
+        colorCam.preview.link(manip_bp.inputImage)
 
-        # Create outputs to the host
-        pose_nn_xout = pipeline.createXLinkOut()
-        pose_nn_xout.setStreamName("pose_nn")
-        pose_nn.out.link(pose_nn_xout.input)
+        # First stage pose detector
+        print("Creating Pose Detection Neural Network...")
+        pd_nn = pipeline.createNeuralNetwork()
+        pd_nn.setBlobPath(get_model_path("pose_detection.blob"))
+        # Increase threads for detection
+        # pd_nn.setNumInferenceThreads(2)
+        # Specify that network takes latest arriving frame in non-blocking manner
+        # Pose detection input
+        pd_nn.input.setQueueSize(1)
+        pd_nn.input.setBlocking(False)
+        # Its input
+        manip_bp.out.link(pd_nn.input)
 
-    xoutRgb = pipeline.createXLinkOut()
-    xoutRgb.setStreamName("rgb")
-    colorCam.preview.link(xoutRgb.input)
+        # Pose detection output
+        pd_out = pipeline.createXLinkOut()
+        pd_out.setStreamName("pd_out")
+        pd_nn.out.link(pd_out.input)
+
+         # Define landmark model
+        print("Creating Landmark Neural Network...")
+        lm_nn = pipeline.createNeuralNetwork()
+        lm_nn.setBlobPath(get_model_path("pose_landmark_full_body.blob"))
+        lm_nn.setNumInferenceThreads(1)
+        # Landmark input
+        lm_in = pipeline.createXLinkIn()
+        lm_in.setStreamName("lm_in")
+        lm_in.out.link(lm_nn.input)
+        # Landmark output
+        lm_out = pipeline.createXLinkOut()
+        lm_out.setStreamName("lm_out")
+        lm_nn.out.link(lm_out.input)
 
     print("Pipeline created.")
     return pipeline
 
 def clear_pose_detection():
-    global keypoints_list, detected_keypoints, personwiseKeypoints, new_pose
     print('Clearing pose detections')
-    keypoints_list = None
-    detected_keypoints = None
-    personwiseKeypoints = None
-    new_pose = True
+    new_pose = False
 
 class RobotHead(Node):
     def __init__(self):
@@ -229,17 +192,11 @@ class RobotHead(Node):
             self.pose_detect_enable_callback,
             1)
 
-        #self.tracker = CameraTracker(self)
-
-        self.pose_cnt = 0
-        # Needed for pose processing thread
-        self.h = 256
-        self.w = 456
-
         self.setWinPos = True;
-        show_mono = False
 
         pose_last = None
+
+        blaze_pose = BlazeposeDepthai()
 
         with dai.Device(create_pipeline()) as device:
             print("Starting pipeline...")
@@ -247,17 +204,14 @@ class RobotHead(Node):
 
             # Output queues will be used to get the rgb frames and nn data from the outputs defined above
             previewQueueRGB = device.getOutputQueue(name="rgb", maxSize=1, blocking=False)
-            if show_mono:
-                previewQueueMono = device.getOutputQueue(name="right", maxSize=1, blocking=False)
             detectionNNQueue = device.getOutputQueue(name="detections", maxSize=1, blocking=False)
             xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=2, blocking=False)
             if show_depth:
                 depthQueue = device.getOutputQueue(name="depth", maxSize=1, blocking=False)
-
             if human_pose:
-                pose_nn = device.getOutputQueue("pose_nn", 1, False)
-                t = threading.Thread(target=self.pose_thread, args=(pose_nn, ))
-                t.start()
+                q_pd_out = device.getOutputQueue(name="pd_out", maxSize=1, blocking=False)
+                q_lm_out = device.getOutputQueue(name="lm_out", maxSize=2, blocking=False)
+                q_lm_in = device.getInputQueue(name="lm_in")
 
             frame = None
             detections = []
@@ -266,44 +220,31 @@ class RobotHead(Node):
             counter = 0
             fps = 0
             color = (64, 255, 64)
-
+            font_scale = 0.4
             disp_cnt = 0
 
-            flipMono = True
-            flipRGB = False
+            flipRGB = True
 
-            # Rough scaling for converting bounding box relative to 300x300 right mono
-            # as seen by detection, and the 456x256 color camera output. (Obtained
-            # by comparing frames.)
-            bbXScale = 456.0/(291.0-28.0)
-            bbYScale = 256.0/(274.0-39.0)
-            bbXOffset = 28.0
-            bbYOffset = 39.0
-
-            detectXScale = 1.0 #300.0/640.0
+            last_region = None
+            last_poses = None
 
             while True:
 
                 rclpy.spin_once(self, timeout_sec=0.001);
 
                 try:
-                    inPreviewRGB = previewQueueRGB.get()
-                    if show_mono:
-                        inPreviewMono = previewQueueMono.get()
-                    inNN = detectionNNQueue.get()
+                    inPreviewRGB = previewQueueRGB.tryGet()
+                    inNN = detectionNNQueue.tryGet()
                 except:
                     print("Failed to read from queue.")
                     continue
 
-                counter+=1
-                current_time = time.monotonic()
-                if (current_time - startTime) > 1 :
-                    fps = counter / (current_time - startTime)
-                    counter = 0
-                    startTime = current_time
+                if inNN != None:
+                    detections = inNN.detections
+                    #print("got detections")
 
-                disp_cnt += 1
-                show_frame = (disp_cnt % 2) == 0
+                if inPreviewRGB == None:
+                    continue
 
                 try:
                     frameRGB = inPreviewRGB.getCvFrame()
@@ -311,9 +252,58 @@ class RobotHead(Node):
                     print("Failed to read preview frame")
                     continue
 
-                self.h, self.w = frameRGB.shape[:2]  # 256, 456
+                #print('got rgb frame')
 
-                detections = inNN.detections
+                # The image preview can be non-square although a square area is fed to the PD NN and LM NN.
+                # Determine the xoffset on the left and right side of the image around
+                # the square area.  This assumes a wider than taller image.
+
+                heightRGB, widthRGB = frameRGB.shape[0:2]
+                frame_size_lm = heightRGB
+                xoffset = int((widthRGB - frame_size_lm)/2)
+
+
+                counter += 1
+                current_time = time.monotonic()
+                if (current_time - startTime) > 1 :
+                    fps = counter / (current_time - startTime)
+                    counter = 0
+                    startTime = current_time
+
+                disp_cnt += 1
+                #show_frame = (disp_cnt % 2) == 0
+                show_frame = True
+                pub_frame = (disp_cnt % 4) == 0
+
+                if human_pose:
+                    frameRGBOrig = frameRGB.copy()
+
+                    # Get pose detection
+                    inference = q_pd_out.tryGet()
+                    if inference != None:
+                        regions = blaze_pose.pd_postprocess(inference, frame_size_lm)
+                        blaze_pose.pd_render(frameRGB, frame_size_lm, xoffset)
+
+                        # Landmarks
+                        blaze_pose.nb_active_regions = 0
+                        for i,r in enumerate(regions):
+                            frame_cropped = frameRGBOrig[0:(frameRGBOrig.shape[1]+1),xoffset:(xoffset+frame_size_lm)]
+                            frame_nn = mpu.warp_rect_img(r.rect_points, frame_cropped, blaze_pose.lm_input_length, blaze_pose.lm_input_length)
+                            nn_data = dai.NNData()
+                            nn_data.setLayer("input_1", to_planar(frame_nn, (blaze_pose.lm_input_length, blaze_pose.lm_input_length)))
+                            q_lm_in.send(nn_data)
+
+                            # Get landmarks
+                            inference = q_lm_out.get()
+                            blaze_pose.lm_postprocess(r, inference, xoffset)
+                            last_region = r
+
+                            last_poses = analyze_pose(r)
+
+                        blaze_pose.check_filter_reset()
+                        if blaze_pose.nb_active_regions == 0:
+                            last_region = None
+                            last_pose = None
 
                 if show_depth:
                     depth = depthQueue.get()
@@ -338,103 +328,22 @@ class RobotHead(Node):
 
                             cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
 
-                    if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
-                        for i in range(18):
-                            for j in range(len(detected_keypoints[i])):
-                                coords = detected_keypoints[i][j][0:2]
-                                x = int(coords[0]/456.0*640.0)
-                                y = int(coords[1]/256.0*400.0)
-                                cv2.circle(depthFrameColor, (x, y), 10 if i == 1 else 5, colors[i], -1, cv2.LINE_AA)
-
-
                     cv2.imshow("depth", depthFrameColor)
 
-                if show_mono:
-                    frameMono= inPreviewMono.getCvFrame()
-
-                    if flipMono:
-                        frameMono = cv2.flip(frameMono, 1)
-
-                    # If the frame is available, draw bounding boxes on it and show the frame
-                    height = frameMono.shape[0]
-                    width  = frameMono.shape[1]
-
-                    for detection in detections:
-                        # Denormalize bounding box
-                        if flipMono:
-                            x2 = int((1.0 - detection.xmin) * width)
-                            x1 = int((1.0 - detection.xmax) * width)
-                        else:
-                            x1 = int(detection.xmin * width)
-                            x2 = int(detection.xmax * width)
-                        y1 = int(detection.ymin * height)
-                        y2 = int(detection.ymax * height)
-
-                        try:
-                            label = labelMap[detection.label]
-                        except:
-                            label = detection.label
-
-                        cv2.putText(frameMono, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                        cv2.putText(frameMono, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                        cv2.putText(frameMono, f"X: {int(detection.spatialCoordinates.x)} mm", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                        cv2.putText(frameMono, f"Y: {int(detection.spatialCoordinates.y*detectXScale)} mm", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-                        cv2.putText(frameMono, f"Z: {int(detection.spatialCoordinates.z)} mm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, color)
-
-                        cv2.rectangle(frameMono, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
-
-                    if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
-                        for i in range(18):
-                            for j in range(len(detected_keypoints[i])):
-                                coords = detected_keypoints[i][j][0:2]
-                                x = int(coords[0]/bbXScale + bbXOffset)
-                                y = int(coords[1]/bbYScale + bbYOffset)
-                                cv2.circle(frameMono, (x, y), 10 if i == 1 else 5, colors[i], -1, cv2.LINE_AA)
-
-                    cv2.putText(frameMono, "NN fps: {:.2f}".format(fps), (2, frameMono.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-                    cv2.imshow("Mono", frameMono)
-
-                # Publish and update tracker
-
-                self.process_detections(detections, 300, 300, detectXScale)
-
-                # Human pose detection processing
-                global new_pose
-                if new_pose == True:
-                    new_pose = False
-                    pose = analyze_pose(detected_keypoints, keypoints_list, personwiseKeypoints)
-                    #print("pose: %s" % str(pose))
-                    msg = DetectedPose()
-                    msg.detected = pose["detected"]
-                    msg.left = pose['left']
-                    msg.right = pose['right']
-                    msg.num_points = pose['num_points']
-                    self.posePublisher.publish(msg)
-                    pose_last = pose;
+                # Publish detections
+                self.process_detections(detections)
 
                 if show_frame:
-                    heightRGB = frameRGB.shape[0]
-                    widthRGB  = frameRGB.shape[1]
 
-                    # Display Human pose
-                    try:
-                        if keypoints_list is not None and detected_keypoints is not None and personwiseKeypoints is not None:
-                            for i in range(18):
-                                for j in range(len(detected_keypoints[i])):
-                                    cv2.circle(frameRGB, detected_keypoints[i][j][0:2], 10 if i == 1 else 5, colors[i], -1, cv2.LINE_AA)
-#                                    cv2.circle(frameRGB, detected_keypoints[i][j][0:2], 5, colors[i], -1, cv2.LINE_AA)
-                            for i in range(17):
-                                for n in range(len(personwiseKeypoints)):
-                                    index = personwiseKeypoints[n][np.array(POSE_PAIRS[i])]
-                                    if -1 in index:
-                                        continue
-                                    B = np.int32(keypoints_list[index.astype(int), 0])
-                                    A = np.int32(keypoints_list[index.astype(int), 1])
-                                    cv2.line(frameRGB, (B[0], A[0]), (B[1], A[1]), colors[i], 3, cv2.LINE_AA)
-                    except:
-                        print("keypoint out of bound")
+                    if last_region != None:
+                        blaze_pose.lm_render(frameRGB, last_region)
 
-                    frameRGB = cv2.flip(frameRGB, 1)
+                    if flipRGB:
+                        frameRGB = cv2.flip(frameRGB, 1)
+
+                    if last_poses is not None:
+                        cv2.putText(frameRGB, f"PoseL: {last_poses['left']}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(frameRGB, f"PoseR: {last_poses['right']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
                     # Display detections
                     for detection in detections:
@@ -447,24 +356,24 @@ class RobotHead(Node):
 
                         # Denormalize bounding box
                         # Approx scaling of detection BBs
-                        x1 = max(0, int((detection.xmin*300 - bbXOffset)*bbXScale))
-                        x2 = min(widthRGB, int((detection.xmax*300 - bbXOffset)*bbXScale))
-                        y1 = max(0, int((detection.ymin*300 - bbYOffset)*bbYScale))
-                        y2 = min(heightRGB, int((detection.ymax*300 - bbYOffset)*bbYScale))
+                        x1 = int(detection.xmin*widthRGB)
+                        x2 = int(detection.xmax*widthRGB)
+                        y1 = int(detection.ymin*heightRGB)
+                        y2 = int(detection.ymax*heightRGB)
 
                         if flipRGB:
                             swap = x2
                             x2 = widthRGB - x1
                             x1 = widthRGB - swap
-                        font_scale = 0.4
+
                         cv2.putText(frameRGB, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
                         cv2.putText(frameRGB, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
                         # ROS coords
-                        cv2.putText(frameRGB, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x*detectXScale)}, {int(detection.spatialCoordinates.y)} mm",
+                        cv2.putText(frameRGB, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)} mm",
                                     (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
                         # Fix - handle multiple persons
-                        if pose_last is not None and label == 'person':
+                        if pose_last is not None:
                             cv2.putText(frameRGB, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
                             cv2.putText(frameRGB, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
@@ -475,12 +384,13 @@ class RobotHead(Node):
                     #frameRGB = cv2.resize(frameRGB, (int(456.0), int(256.0)), interpolation = cv2.INTER_AREA)
                     #frameRGB = cv2.resize(frameRGB, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
 
-                    #cv2.imshow("rgb", frameRGB)
+                    cv2.imshow("rgb", frameRGB)
                     #if self.setWinPos:
                     #    self.setWinPos = False
                     #    cv2.moveWindow("rgb", 78, 30)
 
-                    self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameRGB, "bgr8"))
+                    if pub_frame:
+                        self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameRGB, "bgr8"))
 
                 if cv2.waitKey(1) == ord('q'):
                     break
@@ -492,13 +402,14 @@ class RobotHead(Node):
         if msg.enable is False:
             clear_pose_detection()
 
-    def process_detections(self, detections, w, h, detectXScale):
+    def process_detections(self, detections):
         # Build a message containing the objects.  Uses
         # a custom message format
         objList = []
         objListTrack = []
 
         for detection in detections:
+            #label = 'person'
             try:
                 label = labelMap[detection.label]
             except:
@@ -515,8 +426,7 @@ class RobotHead(Node):
             desc.confidence = detection.confidence
             # Map to ROS convention
             desc.x = detection.spatialCoordinates.z
-            # Scale since detections are running on a distorted 640 wide image
-            desc.y = -1*detection.spatialCoordinates.x*detectXScale
+            desc.y = -1*detection.spatialCoordinates.x
             desc.z = 0.0
             desc.c = 0
             desc.x_min = detection.xmin
@@ -548,53 +458,6 @@ class RobotHead(Node):
 
         # Update pan/tilt
         #self.tracker.process_detections(objListTrack)
-
-    def pose_thread(self, in_queue):
-        global keypoints_list, detected_keypoints, personwiseKeypoints, new_pose
-
-        while running:
-            if human_pose_process != True:
-                time.sleep(0.5)
-                continue
-
-            try:
-                raw_in = in_queue.get()
-            except RuntimeError:
-                return
-
-            self.pose_cnt += 1
-            #if (self.pose_cnt % 2) == 0:
-            if True:
-                #fps.tick('nn')
-                heatmaps = np.array(raw_in.getLayerFp16('Mconv7_stage2_L2')).reshape((1, 19, 32, 57))
-                pafs = np.array(raw_in.getLayerFp16('Mconv7_stage2_L1')).reshape((1, 38, 32, 57))
-                heatmaps = heatmaps.astype('float32')
-                pafs = pafs.astype('float32')
-                outputs = np.concatenate((heatmaps, pafs), axis=1)
-
-                new_keypoints = []
-                new_keypoints_list = np.zeros((0, 3))
-                keypoint_id = 0
-
-                for row in range(18):
-                    probMap = outputs[0, row, :, :]
-                    probMap = cv2.resize(probMap, (self.w, self.h))  # (456, 256)
-                    keypoints = getKeypoints(probMap, 0.3)
-                    new_keypoints_list = np.vstack([new_keypoints_list, *keypoints])
-                    keypoints_with_id = []
-
-                    for i in range(len(keypoints)):
-                        keypoints_with_id.append(keypoints[i] + (keypoint_id,))
-                        keypoint_id += 1
-
-                    new_keypoints.append(keypoints_with_id)
-
-                valid_pairs, invalid_pairs = getValidPairs(outputs, self.w, self.h, new_keypoints)
-                newPersonwiseKeypoints = getPersonwiseKeypoints(valid_pairs, invalid_pairs, new_keypoints_list)
-
-                if human_pose_process == True:
-                    detected_keypoints, keypoints_list, personwiseKeypoints = (new_keypoints, new_keypoints_list, newPersonwiseKeypoints)
-                    new_pose = True
 
 def main(args=None):
     rclpy.init(args=args)

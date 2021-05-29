@@ -207,7 +207,7 @@ class CameraServo:
                     factor = 5.0
                 elif self.obj_ave < 0.4:
                     factor = 1.0
-                #factor *= -1.0
+                factor *= -1.0
             else:
                 pos = obj.y_min
                 self.obj_ave = self.obj_ave*0.2 + pos*0.8
@@ -226,9 +226,9 @@ class CameraServo:
 
             self.obj_last_pos = pos
 
-            #if self.joint == 'pan':
-            #    print('Joint: %s, ave= %f, pos_in= %f factor= %f add= %f, servo= %f' % \
-            #          (self.joint, self.obj_ave, pos, factor, factor*self.servo_step, self.servo_pos - factor*self.servo_step))
+            if self.joint == 'pan':
+                print('Joint: %s, ave= %f, pos_in= %f factor= %f add= %f, servo= %f' % \
+                      (self.joint, self.obj_ave, pos, factor, factor*self.servo_step, self.servo_pos - factor*self.servo_step))
 
             self.set_servo_pos(self.servo_pos - factor*self.servo_step)
             self.obj_last_dir = -1*factor
