@@ -218,7 +218,7 @@ class BlazeposeDepthai:
 
                 list_connections = LINES_FULL_BODY if self.full_body else LINES_UPPER_BODY
                 lines = [np.array([region.landmarks_padded[point,:2] for point in line]) for line in list_connections]
-                cv2.polylines(frame, lines, False, (255, 180, 90), 2, cv2.LINE_AA)
+                cv2.polylines(frame, lines, False, (255, 180, 90), 4, cv2.LINE_AA)
 
                 for i,x_y in enumerate(region.landmarks_padded[:,:2]):
                     if i > 10:

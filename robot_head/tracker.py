@@ -226,9 +226,9 @@ class CameraServo:
 
             self.obj_last_pos = pos
 
-            if self.joint == 'pan':
-                print('Joint: %s, ave= %f, pos_in= %f factor= %f add= %f, servo= %f' % \
-                      (self.joint, self.obj_ave, pos, factor, factor*self.servo_step, self.servo_pos - factor*self.servo_step))
+            #if self.joint == 'pan':
+            #    print('Joint: %s, ave= %f, pos_in= %f factor= %f add= %f, servo= %f' % \
+            #          (self.joint, self.obj_ave, pos, factor, factor*self.servo_step, self.servo_pos - factor*self.servo_step))
 
             self.set_servo_pos(self.servo_pos - factor*self.servo_step)
             self.obj_last_dir = -1*factor
@@ -289,9 +289,6 @@ class CameraServo:
 class CameraTracker(Node):
     def __init__(self):
         super().__init__('camera_tracker')
-
-#   def __init__(self, node):
-#      self.node = node
 
         init_servo_driver()
 
@@ -366,7 +363,6 @@ class CameraTracker(Node):
         self.set_smile()
 
         self.track_cmd_mode = "Track"
-#        self.track_cmd_mode = "None"
         self.track_rate = 0
         self.track_new_mode = None
         self.track_new_level = 0
@@ -394,49 +390,60 @@ class CameraTracker(Node):
 
         self.smile_timer = self.create_timer(0.1, self.smile_timer_callback)
 
+        self.detections = None
+        self.detections_time = None
+
         self.thread = threading.Thread(target=self.tracker_thread)
         self.thread.start()
 
     def tracker_thread(self):
         tilt_cnt = 0
+        track_cnt = 0
         while True:
             time.sleep(0.05)
 
             tilt_cnt += 1
             if tilt_cnt >= 2:
                 tilt_cnt = 0
-                self.head_tilt_timer_callback()
+                self.update_head_tilt()
 
-            self.head_scan_timer_callback()
+            self.head_scan_update()
             self.broadcast_camera_joints()
 
-    # Does not work since RCLPY does not support this yet
-    def publish_detected_pose(self, obj):
-        try:
-            self.tf_map_to_oakd = self.tfBuffer.lookup_transform("map", "oakd",
-                                                                 rclpy.time.Time(),
-                                                                 Duration(seconds=0.3))
-        except Exception as e:
-            self.get_logger().info(str(e))
-            return
-        else:
-            self.get_logger().info('Got transform')
+            track_cnt += 1
+            if track_cnt >= 2:
+                track_cnt = 0
+                if self.detections != None and time.monotonic() - self.detections_time > 1.0:
+                    self.detections = None
+                self.update_tracking(self.detections)
 
-        now = self.get_clock().now()
-
-        msg = PoseStamped()
-        msg.header.stamp = now.to_msg()
-        msg.header.frame_id = "oakd"
-        msg.pose.position.x = obj.x;
-        msg.pose.position.y = obj.y;
-        msg.pose.position.z = obj.z;
-        msg.pose.orientation.x = 0.0;
-        msg.pose.orientation.y = 0.0;
-        msg.pose.orientation.z = 0.0;
-        msg.pose.orientation.w = 1.0;
-
-        map_pose = self.tfBuffer.transform(msg, "map")
-        self.goal_pub.publish(map_pose)
+    # Does not work since RCLPY does not support this yet (4/2021 Rolling release)
+    # def publish_detected_pose(self, obj):
+    #     try:
+    #         self.tf_map_to_oakd = self.tfBuffer.lookup_transform("map", "oakd",
+    #                                                              rclpy.time.Time(),
+    #                                                              Duration(seconds=0.3))
+    #     except Exception as e:
+    #         self.get_logger().info(str(e))
+    #         return
+    #     else:
+    #         self.get_logger().info('Got transform')
+    #
+    #     now = self.get_clock().now()
+    #
+    #     msg = PoseStamped()
+    #     msg.header.stamp = now.to_msg()
+    #     msg.header.frame_id = "oakd"
+    #     msg.pose.position.x = obj.x;
+    #     msg.pose.position.y = obj.y;
+    #     msg.pose.position.z = obj.z;
+    #     msg.pose.orientation.x = 0.0;
+    #     msg.pose.orientation.y = 0.0;
+    #     msg.pose.orientation.z = 0.0;
+    #     msg.pose.orientation.w = 1.0;
+    #
+    #     map_pose = self.tfBuffer.transform(msg, "map")
+    #     self.goal_pub.publish(map_pose)
 
     # Broadcast the pan-tilt joints so ROS TF can be used to tranform positions
     # in the camera frame to other frames such as the map frame when navigating.
@@ -454,15 +461,8 @@ class CameraTracker(Node):
         joint_state.position = [cam_tilt_rad, cam_pan_rad]
         self.pub_joint.publish(joint_state)
 
-    # def update_camera_pos(self, obj):
-    #     pan_pos = self.servo_pan.servo_pos
-    #     tilt_pos = self.servo_tilt.servo_pos
-    #
-    #     self.servo_pan.update(obj)
-    #     self.servo_tilt.update(obj)
-    #     self.broadcast_camera_joints()
-
-    def process_detections(self, objListTrack):
+# Fix - refactor this and scanning
+    def update_tracking(self, objListTrack):
         if self.track_new_mode != None:
             if self.track_new_mode == 'Off':
                 self.servo_pan.stop_tracking()
@@ -488,18 +488,19 @@ class CameraTracker(Node):
 
             closest_obj = None
 
-            cnt = len(objListTrack)
-            if cnt > 0:
-                for obj in objListTrack:
-                    if obj.name != 'person' or obj.confidence < min_track_confidence:
-                        continue
+            if objListTrack != None:
+                cnt = len(objListTrack)
+                if cnt > 0:
+                    for obj in objListTrack:
+                        if obj.name != 'person' or obj.confidence < min_track_confidence:
+                            continue
 
-                    if closest_obj != None:
-                        # x is according to ROS conventions (pointing away from camera)
-                        if closest_obj.x >  obj.x:
+                        if closest_obj != None:
+                            # x is according to ROS conventions (pointing away from camera)
+                            if closest_obj.x >  obj.x:
+                                closest_obj = obj
+                        else:
                             closest_obj = obj
-                    else:
-                        closest_obj = obj
 
             if self.track_voice_detect == False:
                 self.speech_angle = None
@@ -513,12 +514,7 @@ class CameraTracker(Node):
             #if closest_obj != None:
             #    self.publish_detected_pose(closest_obj)
 
-    def obj_detection_callback(self, msg):
-        #self.get_logger().info('Received object detection msg')
-        self.process_detections(msg.objects)
-
-
-    # Move the hand in a left-to-right scanning motion
+    # Move the head in a left-to-right scanning motion
     def update_scan(self, init):
         if init:
             self.scan_left = True
@@ -546,14 +542,11 @@ class CameraTracker(Node):
         scan_status.at_right_count = self.scan_at_right_count
         self.pub_scan_status.publish(scan_status)
 
-    def head_scan_timer_callback(self):
+    def head_scan_update(self):
         if self.track_cmd_mode == "Scan":
             self.update_scan(self.last_track_mode != "Scan")
             self.last_track_mode = self.track_cmd_mode
             self.publish_scan_status()
-
-    def head_tilt_timer_callback(self):
-        self.update_head_tilt()
 
     def head_tilt_callback(self, msg):
         self.get_logger().info('Received head tilt msg: angle: %s, transition_duration: %d, dwell_duration: %d' % \
@@ -708,16 +701,21 @@ class CameraTracker(Node):
         self.get_logger().info('Received speech VAD msg: detected: %d' % msg.data)
         self.speech_detected = msg.data
 
+    def obj_detection_callback(self, msg):
+        #self.get_logger().info('Received object detection msg')
+        self.detections = msg.objects
+        self.detections_time = time.monotonic()
+
 def main(args=None):
     rclpy.init(args=args)
-    depthai_publisher = CameraTracker()
+    cam_tracker = CameraTracker()
 
-    rclpy.spin(depthai_publisher)
+    rclpy.spin(cam_tracker)
 
     # Destroy the node explicitly
     # (optional - otherwise it will be done automatically
     # when the garbage collector destroys the node object)
-    depthai_publisher.destroy_node()
+    cam_tracker.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':

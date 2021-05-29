@@ -20,8 +20,12 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'robot_head = robot_head.main:main',
+            'vision = robot_head.vision:main',
+            'tracker = robot_head.tracker:main',
+            'viewer = robot_head.viewer:main'
         ],
     },
-    scripts=['robot_head/pose.py', 'robot_head/pose_interp.py', 'robot_head/tracker.py']
+    scripts=['robot_head/pose_interp.py',
+             'robot_head/BlazeposeDepthai.py',
+             'robot_head/mediapipe_utils.py']
 )
