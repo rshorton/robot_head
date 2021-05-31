@@ -28,7 +28,9 @@ from BlazeposeDepthai import BlazeposeDepthai, to_planar
 human_pose = True
 human_pose_process = True
 
-show_depth = True
+show_depth = False
+
+cam_out_use_preview = True
 
 syncNN = False
 
@@ -74,8 +76,8 @@ class RobotVision(Node):
             print("Starting pipeline...")
             device.startPipeline()
 
-            # Output queues will be used to get the rgb frames and nn data from the outputs defined above
-            previewQueueRGB = device.getOutputQueue(name="rgb", maxSize=1, blocking=False)
+            previewQueueCAM = device.getOutputQueue(name="cam_out", maxSize=1, blocking=False)
+
             detectionNNQueue = device.getOutputQueue(name="detections", maxSize=1, blocking=False)
             xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=2, blocking=False)
             if show_depth:
@@ -95,7 +97,7 @@ class RobotVision(Node):
             font_scale = 0.4
             disp_cnt = 0
 
-            flipRGB = True
+            flipCAM = True
 
             last_region = None
             last_poses = None
@@ -105,7 +107,7 @@ class RobotVision(Node):
                 rclpy.spin_once(self, timeout_sec=0.001);
 
                 try:
-                    inPreviewRGB = previewQueueRGB.tryGet()
+                    inPreviewCAM = previewQueueCAM.tryGet()
                     inNN = detectionNNQueue.tryGet()
                 except:
                     print("Failed to read from queue.")
@@ -117,24 +119,24 @@ class RobotVision(Node):
                     # Publish detections
                     self.publish_detections(detections)
 
-                if inPreviewRGB == None:
+                if inPreviewCAM == None:
                     continue
 
                 try:
-                    frameRGB = inPreviewRGB.getCvFrame()
+                    frameCAM = inPreviewCAM.getCvFrame()
                 except:
                     print("Failed to read preview frame")
                     continue
 
-                #print('got rgb frame')
+                #print('got cam frame')
 
-                # The image preview can be non-square although a square area is fed to the PD NN and LM NN.
+                # The Pose landmark NN input needs to be square.
                 # Determine the xoffset on the left and right side of the image around
                 # the square area.  This assumes a wider than taller image.
-
-                heightRGB, widthRGB = frameRGB.shape[0:2]
-                frame_size_lm = heightRGB
-                xoffset = int((widthRGB - frame_size_lm)/2)
+                #print("frame size %s" % str(frameCAM.shape))
+                heightCAM, widthCAM = frameCAM.shape[0:2]
+                frame_size_lm = heightCAM
+                xoffset = int((widthCAM - frame_size_lm)/2)
 
                 counter += 1
                 current_time = time.monotonic()
@@ -147,21 +149,24 @@ class RobotVision(Node):
                 #show_frame = (disp_cnt % 2) == 0
                 show_frame = False
                 pub_frame = (disp_cnt % 2) == 0
+                #pub_frame = True
 
                 if human_pose and human_pose_process:
-                    frameRGBOrig = frameRGB.copy()
+                    frameCAMOrig = frameCAM.copy()
 
                     # Get pose detection
                     inference = q_pd_out.tryGet()
                     if inference != None:
                         regions = blaze_pose.pd_postprocess(inference, frame_size_lm)
-                        blaze_pose.pd_render(frameRGB, frame_size_lm, xoffset)
+                        #regions = blaze_pose.pd_postprocess(inference, frame_size_lm)
+                        blaze_pose.pd_render(frameCAM, frame_size_lm, xoffset)
 
                         # Landmarks
                         blaze_pose.nb_active_regions = 0
                         for i,r in enumerate(regions):
-                            frame_cropped = frameRGBOrig[0:(frameRGBOrig.shape[1]+1),xoffset:(xoffset+frame_size_lm)]
-                            frame_nn = mpu.warp_rect_img(r.rect_points, frame_cropped, blaze_pose.lm_input_length, blaze_pose.lm_input_length)
+                            video_frame = frameCAMOrig[0:(frame_size_lm+1),xoffset:(xoffset+frame_size_lm)]
+                            frame_nn = mpu.warp_rect_img(r.rect_points, video_frame, blaze_pose.lm_input_length, blaze_pose.lm_input_length)
+
                             nn_data = dai.NNData()
                             nn_data.setLayer("input_1", to_planar(frame_nn, (blaze_pose.lm_input_length, blaze_pose.lm_input_length)))
                             q_lm_in.send(nn_data)
@@ -169,6 +174,7 @@ class RobotVision(Node):
                             # Get landmarks
                             inference = q_lm_out.get()
                             blaze_pose.lm_postprocess(r, inference, xoffset)
+                            #blaze_pose.lm_postprocess(r, inference)
                             last_region = r
 
                             last_poses = analyze_pose(r)
@@ -179,6 +185,8 @@ class RobotVision(Node):
                         if blaze_pose.nb_active_regions == 0:
                             last_region = None
                             last_pose = None
+                    else:
+                        last_poses = None
 
                 if show_depth:
                     depth = depthQueue.get()
@@ -208,14 +216,14 @@ class RobotVision(Node):
                 if show_frame or pub_frame:
 
                     if last_region != None:
-                        blaze_pose.lm_render(frameRGB, last_region)
+                        blaze_pose.lm_render(frameCAM, last_region)
 
-                    if flipRGB:
-                        frameRGB = cv2.flip(frameRGB, 1)
+                    if flipCAM:
+                        frameCAM = cv2.flip(frameCAM, 1)
 
                     if last_poses is not None:
-                        cv2.putText(frameRGB, f"PoseL: {last_poses['left']}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        cv2.putText(frameRGB, f"PoseR: {last_poses['right']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(frameCAM, f"PoseL: {last_poses['left']}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(frameCAM, f"PoseR: {last_poses['right']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
                     # Display detections
                     for detection in detections:
@@ -228,42 +236,38 @@ class RobotVision(Node):
 
                         # Denormalize bounding box
                         # Approx scaling of detection BBs
-                        x1 = int(detection.xmin*widthRGB)
-                        x2 = int(detection.xmax*widthRGB)
-                        y1 = int(detection.ymin*heightRGB)
-                        y2 = int(detection.ymax*heightRGB)
+                        x1 = int(detection.xmin*widthCAM)
+                        x2 = int(detection.xmax*widthCAM)
+                        y1 = int(detection.ymin*heightCAM)
+                        y2 = int(detection.ymax*heightCAM)
 
-                        if flipRGB:
+                        if flipCAM:
                             swap = x2
-                            x2 = widthRGB - x1
-                            x1 = widthRGB - swap
+                            x2 = widthCAM - x1
+                            x1 = widthCAM - swap
 
-                        cv2.putText(frameRGB, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        cv2.putText(frameRGB, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(frameCAM, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        cv2.putText(frameCAM, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
                         # ROS coords
-                        cv2.putText(frameRGB, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)} mm",
+                        cv2.putText(frameCAM, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)} mm",
                                     (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
-                        # Fix - handle multiple persons
                         if pose_last is not None:
-                            cv2.putText(frameRGB, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                            cv2.putText(frameRGB, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                            cv2.putText(frameCAM, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                            cv2.putText(frameCAM, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
 
-                        cv2.rectangle(frameRGB, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
 
-                    cv2.putText(frameRGB, "NN fps: {:.2f}".format(fps), (2, frameRGB.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-
-                    #frameRGB = cv2.resize(frameRGB, (int(456.0), int(256.0)), interpolation = cv2.INTER_AREA)
-                    #frameRGB = cv2.resize(frameRGB, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
+                    cv2.putText(frameCAM, "fps: {:.2f}".format(fps), (2, frameCAM.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
 
                     if show_frame:
-                        cv2.imshow("rgb", frameRGB)
+                        cv2.imshow("camera", frameCAM)
                         if self.setWinPos:
                             self.setWinPos = False
-                            cv2.moveWindow("rgb", 78, 30)
+                            cv2.moveWindow("camera", 78, 30)
 
                     if pub_frame:
-                        self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameRGB, "bgr8"))
+                        self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameCAM, "bgr8"))
 
                 if cv2.waitKey(1) == ord('q'):
                     break
@@ -282,8 +286,6 @@ class RobotVision(Node):
         monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
         monoLeft.setFps(10.0);
 
-        print("Mono res: %s" % str(monoRight.getResolutionSize()))
-
         # Stereo Depth
         stereo = pipeline.createStereoDepth()
         stereo.setConfidenceThreshold(255)
@@ -294,16 +296,19 @@ class RobotVision(Node):
         # Color camera
         colorCam = pipeline.createColorCamera()
         colorCam.setPreviewSize(640, 360)
+
         colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
         colorCam.setInterleaved(False)
         colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
         colorCam.setFps(10.0)
         colorCam.setPreviewKeepAspectRatio(False)
 
-        # Mobilenet SSD detection
-        # Use Image manip to size accordingly
+        # Scale video from 1920x1080 to 640x360
+        colorCam.setIspScale((1,3))
+
         manip_mn = pipeline.createImageManip()
         manip_mn.initialConfig.setResize(300, 300)
+        #manip_mn.setKeepAspectRatio(True)
         manip_mn.setKeepAspectRatio(False)
         colorCam.preview.link(manip_mn.inputImage)
 
@@ -317,15 +322,19 @@ class RobotVision(Node):
         spatialDetectionNetwork.setDepthUpperThreshold(10000)
         # Its inputs
         manip_mn.out.link(spatialDetectionNetwork.input)
+        #colorCam.preview.link(spatialDetectionNetwork.input)
         stereo.depth.link(spatialDetectionNetwork.inputDepth)
 
         # Create outputs to the host
-        xoutRgb = pipeline.createXLinkOut()
-        xoutRgb.setStreamName("rgb")
-        if syncNN:
-            spatialDetectionNetwork.passthrough.link(xoutRgb.input)
+        xoutCam = pipeline.createXLinkOut()
+        xoutCam.setStreamName("cam_out")
+        if cam_out_use_preview:
+            if syncNN:
+                spatialDetectionNetwork.passthrough.link(xoutCam.input)
+            else:
+                colorCam.preview.link(xoutCam.input)
         else:
-            colorCam.preview.link(xoutRgb.input)
+            colorCam.video.link(xoutCam.input)
 
         depthRoiMap = pipeline.createXLinkOut()
         depthRoiMap.setStreamName("boundingBoxDepthMapping")
@@ -374,10 +383,12 @@ class RobotVision(Node):
             lm_nn = pipeline.createNeuralNetwork()
             lm_nn.setBlobPath(get_model_path("pose_landmark_full_body.blob"))
             lm_nn.setNumInferenceThreads(1)
+
             # Landmark input
             lm_in = pipeline.createXLinkIn()
             lm_in.setStreamName("lm_in")
             lm_in.out.link(lm_nn.input)
+
             # Landmark output
             lm_out = pipeline.createXLinkOut()
             lm_out.setStreamName("lm_out")

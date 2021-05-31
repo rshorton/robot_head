@@ -1,3 +1,7 @@
+# Blazepose tracking with DepthAI
+# From https://github.com/geaxgx/depthai_blazepose
+# Credits:  geaxgx
+
 import cv2
 import numpy as np
 from collections import namedtuple

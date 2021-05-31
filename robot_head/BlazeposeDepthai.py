@@ -1,3 +1,7 @@
+# Blazepose tracking with DepthAI
+# From https://github.com/geaxgx/depthai_blazepose
+# Credits:  geaxgx
+
 import numpy as np
 from collections import namedtuple
 import mediapipe_utils as mpu
@@ -125,7 +129,7 @@ class BlazeposeDepthai:
         for r in self.regions:
             if self.show_pd_box:
                 box = (np.array(r.pd_box) * frame_size_lm).astype(int)
-                cv2.rectangle(frame, (box[0]+xoffset, box[1]), (box[0]+box[2]+xoffset, box[1]+box[3]), (0,255,0), 2)
+                cv2.rectangle(frame, (box[0] + xoffset, box[1]), ((box[0]+box[2] + xoffset), (box[1]+box[3])), (0,255,0), 2)
             if self.show_pd_kps:
                 # Key point 0 - mid hip center
                 # Key point 1 - point that encodes size & rotation (for full body)
@@ -196,8 +200,6 @@ class BlazeposeDepthai:
                 lm_xyz = self.filter.apply(lm_xyz)
             region.landmarks_padded = lm_xyz.astype(np.int)
 
-            # Adjust for case when frame is non-square and landmarks are detected on cropped square region
-            # of full image
             region.landmarks_padded[:,0] += xoffset
 
             # If we added padding to make the image square, we need to remove this padding from landmark coordinates
