@@ -61,7 +61,7 @@ def pose_from_angles(s, e):
             return "ArmOut"
         elif s > -100 and s < -55 and e > -30 and e < 30:
             return "ArmToSide"
-        elif s > -75 and s < 0 and e > 130 and e < 155:
+        elif s > -75 and s < 0 and e > 130 and e < 160:
             return "TouchingShoulder"
         elif s > -80 and s < -45 and e > -130 and e < -90:
             return "TouchingStomach"
@@ -128,7 +128,7 @@ def analyze_pose(bp_region):
                                   bp_region.landmarks_abs[11,:2], # Left Shoulder
                                   bp_region.landmarks_abs[12,:2]) # Right Shoulder
     except Exception as e:
-        print(e)
+        #print(e)
         pose["num_points"] = 0
 
     pose["left"] = pose_l
