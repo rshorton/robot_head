@@ -16,7 +16,7 @@ from std_msgs.msg import String
 from std_msgs.msg import Bool
 from std_msgs.msg import Int32
 
-from face_control_interfaces.msg import Smile, HeadTilt, Track, ScanStatus
+from face_control_interfaces.msg import Smile, HeadTilt, Track, ScanStatus, Antenna
 
 # Custom object detection messages
 from object_detection_msgs.msg import ObjectDescArray
@@ -64,6 +64,9 @@ talk_patterns =  [[0, 1, 0, 1, 0, 0, 1, 0, 0],
                   [0, 0, 0, 1, 1, 0, 0, 0, 0],
                   [0, 1, 0, 0, 1, 0, 0, 1, 0],
                   [0, 0, 1, 1, 0, 0, 1, 0, 0]];
+
+antenna_left_ch = 10
+antenna_right_ch = 11
 
 servo_inited = False
 servo_kit = None
@@ -316,6 +319,12 @@ class CameraTracker(Node):
             self.head_tilt_callback,
             2)
 
+        self.sub_antenna = self.create_subscription(
+            Antenna,
+            '/head/antenna',
+            self.antenna_callback,
+            2)
+
         self.sub_obj_detection = self.create_subscription(
             ObjectDescArray,
             '/head/detected_objects',
@@ -362,6 +371,9 @@ class CameraTracker(Node):
 
         self.set_smile()
 
+        self.new_antenna_state = None
+        self.antenna_state = None
+
         self.track_cmd_mode = "Track"
         self.track_rate = 0
         self.track_new_mode = None
@@ -389,6 +401,8 @@ class CameraTracker(Node):
         self.speech_detected = None
 
         self.smile_timer = self.create_timer(0.1, self.smile_timer_callback)
+
+        self.antenna_timer = self.create_timer(0.1, self.antenna_timer_callback)
 
         self.detections = None
         self.detections_time = None
@@ -682,6 +696,50 @@ class CameraTracker(Node):
             #print("new self.smile_talk_index= %d" % self.smile_talk_index)
             self.smile_leds = talk_patterns[self.smile_talk_index]
             self.set_smile()
+
+    def antenna_timer_callback(self):
+        self.update_antenna()
+
+    def antenna_callback(self, msg):
+        self.get_logger().info('Received antenna msg')
+        self.new_antenna_state = msg
+
+    def update_antenna(self):
+        reset = False
+        if self.antenna_state == None:
+            self.antenna_state = Antenna()
+            self.antenna_state.left_blink_pattern =  '1010100000'
+            self.antenna_state.right_blink_pattern = '0000010101'
+            self.antenna_intensity = 50
+            self.antenna_rate = 1
+            reset = True
+
+        elif self.new_antenna_state != None:
+            self.antenna_state = self.new_antenna_state
+            self.new_antenna_state = None
+            reset = True
+
+        if reset:
+            self.antenna_left_idx = 0
+            self.antenna_right_idx = 0
+            self.antenna_update_cnt = 0
+
+        self.antenna_update_cnt -= 1
+        if self.antenna_update_cnt < 0:
+            self.antenna_update_cnt = self.antenna_rate
+            def set_antenna(side, pattern, idx):
+                idx -= 1
+                if idx < 0:
+                    idx = len(pattern) - 1
+                pca.channels[side].duty_cycle = 65535 if pattern[idx] == '0' else self.antenna_intensity*500
+                print("Antenna updated: %s, idx= %u" % (side, idx))
+                return idx
+
+            self.antenna_left_idx = set_antenna(antenna_left_ch, self.antenna_state.left_blink_pattern, self.antenna_left_idx)
+            self.antenna_right_idx = set_antenna(antenna_right_ch, self.antenna_state.right_blink_pattern, self.antenna_right_idx)
+
+        else:
+            print("Antenna cnt: %u" % self.antenna_update_cnt)
 
     def speaking_callback(self, msg):
         self.get_logger().info('Received speaking active msg: speaking: %d' % msg.data)
