@@ -293,6 +293,12 @@ class CameraTracker(Node):
             self.speaking_callback,
             2)
 
+        self.sub_listening = self.create_subscription(
+            Bool,
+            '/speech_detect/listening',
+            self.listening_callback,
+            2)
+
         self.sub_track = self.create_subscription(
             Track,
             '/head/track',
@@ -389,6 +395,7 @@ class CameraTracker(Node):
 
         self.sound_aoa = None
         self.speech_detected = None
+        self.listening = False
 
         self.smile_timer = self.create_timer(0.1, self.smile_timer_callback)
 
@@ -742,6 +749,12 @@ class CameraTracker(Node):
 
     def update_antenna(self):
         reset = False
+
+        if self.listening:
+            pca.channels[antenna_left_ch].duty_cycle = 10000;
+            pca.channels[antenna_right_ch].duty_cycle = 10000;
+            return
+
         if self.antenna == None:
             self.antenna = Antenna()
             self.antenna.left_blink_pattern =  '1010100000'
@@ -781,6 +794,10 @@ class CameraTracker(Node):
 
         #else:
         #    print("Antenna cnt: %u" % self.antenna_update_cnt)
+
+    def listening_callback(self, msg):
+        self.get_logger().info('Received listening active msg: speaking: %d' % msg.data)
+        self.listening = msg.data
 
     def speaking_callback(self, msg):
         self.get_logger().info('Received speaking active msg: speaking: %d' % msg.data)
