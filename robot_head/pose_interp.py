@@ -67,7 +67,7 @@ def pose_from_angles(s, e):
             return "TouchingStomach"
         elif s > 20 and s < 120 and e > -10 and e < 80:
             return "Abovehead"
-        elif s > 0 and s < 50 and e > 90 and e < 150:
+        elif s > 0 and s < 60 and e > 70 and e < 150:
             return "OnHead"
         elif s > -100 and s < -45 and e > -180 and e < -140:
             return "TouchingNeck"
