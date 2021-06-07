@@ -48,13 +48,13 @@ class CameraViewer(Node):
 
     def image_callback(self, msg):
         cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        cv_image = cv2.resize(cv_image, (int(456.0*1.9), int(256.0*1.9)), interpolation = cv2.INTER_AREA)
+        cv_image = cv2.resize(cv_image, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)
         cv2.imshow("image", cv_image)
 
         # Set initial window pos
         if self.setWinPos:
             self.setWinPos = False
-            cv2.moveWindow("image", 78, 30)
+            cv2.moveWindow("image", 78, 25)
 
         key = cv2.waitKey(1)
 
