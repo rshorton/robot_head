@@ -40,6 +40,27 @@ labelMap = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus
 def get_model_path(model_name):
     return str(pathlib.Path(__file__).parent.absolute()) + '/models/' + model_name
 
+def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_scale, text_color, text_thick):
+    w = 0
+    hmax = 0
+    for t in text:
+        (tw, th) = cv2.getTextSize(t, font, fontScale=font_scale, thickness=text_thick)[0]
+        w = max(w, 2*xpad + tw)
+        hmax = max(hmax, th)
+    h = (ypad + hmax)*len(text) + ypad
+
+    sub = img[y:y+h, x:x+w]
+    bg = np.zeros_like(sub)
+    bg[:] = bg_color
+    blend = cv2.addWeighted(sub, 1.0 - alpha, bg, alpha, 0)
+
+    yy = 0
+    for t in text:
+        cv2.putText(blend, t, (xpad, yy + ypad + hmax), font, font_scale, text_color, text_thick, cv2.LINE_AA)
+        yy += ypad + hmax
+    img[y:y+h, x:x+w] = blend
+    return x, y, x + w, y + h
+
 class RobotVision(Node):
     def __init__(self):
         super().__init__('robot_vision')
@@ -93,8 +114,11 @@ class RobotVision(Node):
             startTime = time.monotonic()
             counter = 0
             fps = 0
-            color = (64, 255, 64)
-            font_scale = 0.4
+            white = (255, 255, 255)
+            color = (0, 255, 0)
+            rect_color = (128, 128, 128)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
             disp_cnt = 0
 
             flipCAM = True
@@ -222,8 +246,9 @@ class RobotVision(Node):
                         frameCAM = cv2.flip(frameCAM, 1)
 
                     if last_poses is not None:
-                        cv2.putText(frameCAM, f"PoseL: {last_poses['left']}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        cv2.putText(frameCAM, f"PoseR: {last_poses['right']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        line1 = f"PoseL: {last_poses['left']}"
+                        line2 = f"PoseR: {last_poses['right']}"
+                        OverlayTextOnBox(frameCAM, 0, 0, 10, 10, [line1, line2], (0, 0, 0), 0.4, font, 0.6, white, 1)
 
                     # Display detections
                     for detection in detections:
@@ -243,22 +268,29 @@ class RobotVision(Node):
 
                         if flipCAM:
                             swap = x2
-                            x2 = widthCAM - x1
-                            x1 = widthCAM - swap
+                            x2 = max(0, widthCAM - x1)
+                            x1 = max(0, widthCAM - swap)
 
-                        cv2.putText(frameCAM, str(label), (x1 + 10, y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        cv2.putText(frameCAM, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                        # ROS coords
-                        cv2.putText(frameCAM, f"X,Y,Z: {int(detection.spatialCoordinates.z)}, {-1*int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)} mm",
-                                    (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        y1 = max(0, y1)
+                        y2 = max(0, y2)
 
-                        if pose_last is not None:
-                            cv2.putText(frameCAM, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
-                            cv2.putText(frameCAM, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color)
+                        conf = "{:d}%".format(int(detection.confidence*100))
+                        pos_x = f"x: {int(detection.spatialCoordinates.z)}"
+                        pos_y = f"y: {int(detection.spatialCoordinates.x)*-1}"
+                        pos_z = f"z: {int(detection.spatialCoordinates.y)}"
 
-                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), color, cv2.FONT_HERSHEY_SIMPLEX)
+                        OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [conf, pos_x, pos_y, pos_z], (0, 0, 0), 0.4, font, font_scale, white, 1)
 
-                    cv2.putText(frameCAM, "fps: {:.2f}".format(fps), (2, frameCAM.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
+                        #if pose_last is not None:
+                        #    cv2.getTextSize(text, font, font_scale, thickness)
+                        #    cv2.putText(frameCAM, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), font, font_scale, color)
+                        #    cv2.putText(frameCAM, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), font, font_scale, color)
+
+                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
+
+                    OverlayTextOnBox(frameCAM, 0, frameCAM.shape[0] - 25, 5, 5, ["fps: {:.2f}".format(fps)], (0, 0, 0), 0.4, font, font_scale, white, 1)
+
+                    #cv2.putText(frameCAM, "fps: {:.2f}".format(fps), (2, frameCAM.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
 
                     if show_frame:
                         cv2.imshow("camera", frameCAM)
