@@ -496,13 +496,12 @@ class CameraTracker(Node):
                         time.monotonic() - self.last_voice_track > 10.0:
 
                         # Mic AOA angle
-                        #    270
-                        # 0     180
-                        #    90
+                        #    225
+                        # -45     135
+                        #    45
                         #  front
                         #
-                        angle = self.sound_aoa if self.sound_aoa < 270 else self.sound_aoa - 360.0
-                        scan_left = angle > 90.0
+                        scan_left = self.sound_aoa > 45 and self.sound_aoa < 225
                         left_cnt = 1 if scan_left else 0
                         right_cnt = 0 if scan_left else 1
                         self.init_scan(scan_left, True, left_cnt, right_cnt)
