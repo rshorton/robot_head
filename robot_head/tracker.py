@@ -1,11 +1,11 @@
 import threading
 import sys
 import time
+import math
 
 import os
 import os.path
 from os import path
-from math import copysign
 
 import rclpy
 from rclpy.node import Node
@@ -26,8 +26,8 @@ from object_detection_msgs.msg import ObjectDesc
 from sensor_msgs.msg import JointState
 from rclpy.qos import QoSProfile
 
-#from geometry_msgs.msg import PoseStamped
-#import tf2_ros
+from geometry_msgs.msg import PoseStamped, Twist
+import tf2_ros
 #from tf2_ros.transform_listener import TransformListener
 
 # Servo control - uses Adafruit ServoKit to drive
@@ -37,7 +37,7 @@ from adafruit_servokit import ServoKit
 
 min_track_confidence = 0.70
 
-PI = 3.14159
+PI = math.pi
 
 smile_led_map =   [1, 2, 3, 8, 4, 5, 6, 7, 9]
 smile_patterns = [[0, 0, 0, 1, 1, 1, 0, 0, 0],
@@ -192,7 +192,7 @@ class CameraServo:
                 self.obj_ave = self.obj_ave*0.7 + pos*0.3
 
                 diff = 0.5 - self.obj_ave
-                adj = diff * 25.0
+                adj = diff * 20.0
                 #if abs(adj) < 0.4:
                 if abs(adj) < 1.0:
                     adj = 0.0
@@ -223,7 +223,7 @@ class CameraServo:
             diff = self.target_pos - self.servo_pos
             if abs(diff) < self.move_steps:
                 self.move_steps = abs(diff)
-            self.set_servo_pos(self.servo_pos + copysign(self.move_steps, diff))
+            self.set_servo_pos(self.servo_pos + math.copysign(self.move_steps, diff))
 
             #print("Moving %s %f" % (self.joint, self.servo_pos))
 
@@ -249,6 +249,29 @@ class CameraServo:
                 self.obj_last_dir = 0
                 self.target_pos = self.servo_midpos
                 self.move_steps = 3
+
+# From: https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
+def euler_from_quaternion(x, y, z, w):
+    """
+    Convert a quaternion into euler angles (roll, pitch, yaw)
+    roll is rotation around x in radians (counterclockwise)
+    pitch is rotation around y in radians (counterclockwise)
+    yaw is rotation around z in radians (counterclockwise)
+    """
+    t0 = +2.0 * (w * x + y * z)
+    t1 = +1.0 - 2.0 * (x * x + y * y)
+    roll_x = math.atan2(t0, t1)
+
+    t2 = +2.0 * (w * y - z * x)
+    t2 = +1.0 if t2 > +1.0 else t2
+    t2 = -1.0 if t2 < -1.0 else t2
+    pitch_y = math.asin(t2)
+
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw_z = math.atan2(t3, t4)
+
+    return roll_x, pitch_y, yaw_z # in radians
 
 class CameraTracker(Node):
     def __init__(self):
@@ -310,6 +333,14 @@ class CameraTracker(Node):
             self.speech_aoa_callback,
             2)
 
+        #self.sub_pose = self.create_subscription(
+        #    PoseStamped,
+        #    '/robot_pose',
+        #    self.pose_callback,
+        #    1)
+
+        self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
+
         # Publisher for states of the pan-tilt joints
         qos_profile = QoSProfile(depth=10)
         self.pub_joint = self.create_publisher(JointState, 'joint_states', qos_profile)
@@ -346,7 +377,11 @@ class CameraTracker(Node):
         self.track_new_mode = None
         self.track_new_level = 0
         self.track_voice_detect = True
+        self.track_turn_base = True
         self.last_voice_track = 0
+
+        self.track_base_track_vel = 0.0
+        self.track_base_track_pan_ave = None
 
         self.head_rot_cmd_angle = None
         self.head_rot_steps = 0
@@ -379,8 +414,36 @@ class CameraTracker(Node):
         self.detections = None
         self.detections_time = None
 
+        self.cur_pose = None
+        self.cur_pose_valid = False;
+
         self.thread = threading.Thread(target=self.tracker_thread)
         self.thread.start()
+
+    def stop_base_pose_tracking(self):
+        if abs(self.track_base_track_vel) > 0.0:
+            self.track_base_track_vel = 0.0
+            msg = Twist()
+            msg.angular.z = self.track_base_track_vel
+            self.pub_cmd_vel.publish(msg)
+
+    def update_base_pose_tracking(self):
+        #print("Update base pose, state= %s" % self.track_base_track_state)
+
+        pan = self.servo_pan.get_servo_degrees();
+        if self.track_base_track_pan_ave == None:
+            self.track_base_track_pan_ave = pan
+        else:
+            self.track_base_track_pan_ave = self.track_base_track_pan_ave*0.5 + pan*0.5
+
+        if abs(self.servo_pan.get_servo_degrees()) > 20.0:
+            self.track_base_track_vel = math.copysign(0.1, self.track_base_track_pan_ave)
+        else:
+            self.track_base_track_vel = 0.0
+
+        msg = Twist()
+        msg.angular.z = self.track_base_track_vel
+        self.pub_cmd_vel.publish(msg)
 
     def tracker_thread(self):
         rot_cnt = 0
@@ -399,6 +462,7 @@ class CameraTracker(Node):
                 self.scan_active = False
                 self.servo_pan.stop_tracking()
                 self.servo_tilt.stop_tracking()
+                self.stop_base_pose_tracking()
 
                 if self.track_new_mode == "LookDown":
                     self.servo_tilt.set_servo_pos(self.servo_tilt.servo_minpos)
@@ -491,8 +555,16 @@ class CameraTracker(Node):
                     self.sound_aoa = None
                     self.broadcast_camera_joints()
 
+                if self.track_turn_base:
+                    self.update_base_pose_tracking()
+                else:
+                    self.stop_base_pose_tracking()
+
             if self.detections != None and time.monotonic() - self.detections_time > 1.0:
                 self.detections = None
+
+            if self.detections == None:
+                self.stop_base_pose_tracking()
 
             self.broadcast_camera_joints()
 
@@ -637,6 +709,7 @@ class CameraTracker(Node):
         self.get_logger().info('Received track msg: mode: %s, rate: %s' % (msg.mode, msg.rate))
         self.track_new_mode = msg.mode
         self.track_voice_detect = msg.voice_detect
+        self.tracK_turn_base = msg.turn_base
         self.scan_step = int(msg.rate)
 
     def set_smile(self):
@@ -796,6 +869,11 @@ class CameraTracker(Node):
         #self.get_logger().info('Received object detection msg')
         self.detections = msg.objects
         self.detections_time = time.monotonic()
+
+    def pose_callback(self, msg):
+        #self.get_logger().info('Received pose')
+        self.cur_pose = msg.pose
+        self.cur_pose_valid = True;
 
 def main(args=None):
     rclpy.init(args=args)
