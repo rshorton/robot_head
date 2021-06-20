@@ -479,26 +479,26 @@ class CameraTracker(Node):
                 self.publish_scan_status()
 
             # Check for objects of interest
-            closest_obj = None
+            closest_person = None
             if self.detections != None:
                 cnt = len(self.detections)
                 if cnt > 0:
                     for obj in self.detections:
                         if obj.name != 'person' or obj.confidence < min_track_confidence:
                             continue
-                        if closest_obj != None:
+                        if closest_person != None:
                             # x is according to ROS conventions (pointing away from camera)
-                            if closest_obj.x >  obj.x:
-                                closest_obj = obj
+                            if closest_person.x >  obj.x:
+                                closest_person = obj
                         else:
-                            closest_obj = obj
+                            closest_person = obj
 
             if self.track_cmd_mode == "Scan":
                 self.update_scan()
                 self.publish_scan_status()
 
             elif self.track_cmd_mode == "TrackScan":
-                if closest_obj == None:
+                if closest_person == None:
                     self.update_scan()
                     # Go back to track mode if scan completed without seeing a person
                     if self.scan_active == False:
@@ -511,25 +511,9 @@ class CameraTracker(Node):
                 if track_cnt >= 2:
                     track_cnt = 0
 
-                    closest_obj = None
-
-                    if self.detections != None:
-                        cnt = len(self.detections)
-                        if cnt > 0:
-                            for obj in self.detections:
-                                if obj.name != 'person' or obj.confidence < min_track_confidence:
-                                    continue
-
-                                if closest_obj != None:
-                                    # x is according to ROS conventions (pointing away from camera)
-                                    if closest_obj.x >  obj.x:
-                                        closest_obj = obj
-                                else:
-                                    closest_obj = obj
-
                     # If no object detect is detected but sound was detected, then
                     # scan in the direction of the sound.
-                    if closest_obj == None and \
+                    if closest_person == None and \
                         self.track_voice_detect and \
                         self.sound_aoa != None and \
                         time.monotonic() - self.last_voice_track > 10.0:
@@ -549,8 +533,8 @@ class CameraTracker(Node):
                         self.last_voice_track = time.monotonic()
 
                     else:
-                        self.servo_pan.update(closest_obj)
-                        self.servo_tilt.update(closest_obj)
+                        self.servo_pan.update(closest_person)
+                        self.servo_tilt.update(closest_person)
 
                     self.sound_aoa = None
                     self.broadcast_camera_joints()
@@ -563,7 +547,7 @@ class CameraTracker(Node):
             if self.detections != None and time.monotonic() - self.detections_time > 1.0:
                 self.detections = None
 
-            if self.detections == None:
+            if closest_person == None:
                 self.stop_base_pose_tracking()
 
             self.broadcast_camera_joints()
