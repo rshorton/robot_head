@@ -97,8 +97,6 @@ class CameraServo:
             self.servo_maxpos = 170
             self.servo_midpos = 87
 
-            self.servo_step = 0.75
-
             # Approx angle measurements for the above positions
             self.servo_degrees_per_step = (58.0 + 59.0)/(self.servo_maxpos_cal - self.servo_minpos)
             #self.servo_mid_degrees = 57.0
@@ -111,8 +109,6 @@ class CameraServo:
             self.servo_maxpos = 80
             self.servo_midpos = 26
 
-            self.servo_step = 0.75
-
             self.servo_degrees_per_step = (15.0 + 90.0)/(self.servo_maxpos_cal - self.servo_minpos)
             #self.servo_mid_degrees = 14.0
 
@@ -122,8 +118,6 @@ class CameraServo:
             self.servo_minpos = 0
             self.servo_maxpos = 150
             self.servo_midpos = 90
-
-            self.servo_step = 0.75
 
             self.servo_degrees_per_step = (40.0 + 65.0)/(self.servo_maxpos - self.servo_minpos)
             #self.servo_mid_degrees = 57.0
@@ -145,7 +139,7 @@ class CameraServo:
         self.last_adj_by_voice = 0.0
 
     def is_at_servo_limit(self):
-        return  self.servo_pos <= self.servo_minpos + self.servo_step or self.servo_pos >= self.servo_maxpos - self.servo_step
+        return  self.servo_pos <= self.servo_minpos or self.servo_pos >= self.servo_maxpos
 
     def is_at_midpos(self):
         return  self.servo_pos == self.midpos
@@ -197,48 +191,29 @@ class CameraServo:
                 pos = (obj.x_min + obj.x_max)/2
                 self.obj_ave = self.obj_ave*0.7 + pos*0.3
 
-                # Try to object in center of left-right view
-                if self.obj_ave > 0.9:
-                    factor = -8.0
-                elif self.obj_ave > 0.8:
-                    factor = -6.0
-                elif self.obj_ave > 0.7:
-                    factor = -5.0
-                elif self.obj_ave > 0.6:
-                    factor = -1.0
-                elif self.obj_ave < 0.1:
-                    factor = 8.0
-                elif self.obj_ave < 0.2:
-                    factor = 6.0
-                elif self.obj_ave < 0.3:
-                    factor = 5.0
-                elif self.obj_ave < 0.4:
-                    factor = 1.0
-                factor *= -1.0
+                diff = 0.5 - self.obj_ave
+                adj = diff * 25.0
+                #if abs(adj) < 0.4:
+                if abs(adj) < 1.0:
+                    adj = 0.0
             else:
                 pos = obj.y_min
-                self.obj_ave = self.obj_ave*0.2 + pos*0.8
+                self.obj_ave = self.obj_ave*0.5 + pos*0.5
 
-                # Try to keep top of object (person) in view
-                if self.obj_ave > 0.6:
-                    factor = 2.0
-                elif self.obj_ave > 0.4:
-                    factor = 1.0
-                elif self.obj_ave > 0.3:
-                    factor = 1.0
-                elif self.obj_ave < 0.1:
-                    factor = -1.0
-                elif self.obj_ave < 0.2:
-                    factor = -1.0
+                diff = 0.25 - self.obj_ave
+                adj = diff * 10.0
+                if abs(adj) < 1.0:
+                    adj = 0.0
 
             self.obj_last_pos = pos
 
-            #if self.joint == 'pan':
-            #    print('Joint: %s, ave= %f, pos_in= %f factor= %f add= %f, servo= %f' % \
-            #          (self.joint, self.obj_ave, pos, factor, factor*self.servo_step, self.servo_pos - factor*self.servo_step))
+            # Debug/tuning
+            #if self.joint == 'tilt':
+            #    print('Joint: %s, ave= %f, pos_in= %f adj= %f, servo pos= %f' % \
+            #          (self.joint, self.obj_ave, pos, adj, self.servo_pos + adj))
 
-            self.set_servo_pos(self.servo_pos - factor*self.servo_step)
-            self.obj_last_dir = -1*factor
+            self.set_servo_pos(self.servo_pos + adj)
+            self.obj_last_dir = adj
 
             self.target_pos = None
             self.auto_center_time = time.monotonic()
@@ -265,7 +240,7 @@ class CameraServo:
             # then return to center after a timeout.
             if False:
             #if self.obj_last_dir != 0:
-                self.set_servo_pos(self.servo_pos + self.obj_last_dir*self.servo_step*1)
+                self.set_servo_pos(self.servo_pos + self.obj_last_dir*0.75)
                 self.auto_center_time = time.monotonic()
                 if self.is_at_servo_limit():
                     self.obj_last_dir = 0
@@ -499,7 +474,7 @@ class CameraTracker(Node):
                         #    225
                         # -45     135
                         #    45
-                        #  front
+                        # front of robot
                         #
                         scan_left = self.sound_aoa > 45 and self.sound_aoa < 225
                         left_cnt = 1 if scan_left else 0
