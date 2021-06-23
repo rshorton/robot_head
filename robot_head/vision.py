@@ -29,9 +29,9 @@ human_pose = True
 human_pose_process = True
 
 show_depth = False
-
 cam_out_use_preview = True
-
+use_tracker = True
+print_detections = False
 syncNN = False
 
 labelMap = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
@@ -87,11 +87,19 @@ class RobotVision(Node):
             self.pose_detect_enable_callback,
             1)
 
-        self.setWinPos = True;
+        self.subTracked = self.create_subscription(
+            ObjectDesc,
+            '/head/tracked',
+            self.tracked_callback,
+            1)
+
+        self.setWinPos = True
+
+        self.tracked_obj = None
 
         pose_last = None
 
-        blaze_pose = BlazeposeDepthai()
+        blaze_pose = BlazeposeDepthai(multi_detection = True)
 
         with dai.Device(self.create_pipeline()) as device:
             print("Starting pipeline...")
@@ -109,7 +117,7 @@ class RobotVision(Node):
                 q_lm_in = device.getInputQueue(name="lm_in")
 
             frame = None
-            detections = []
+            tracklets = []
 
             startTime = time.monotonic()
             counter = 0
@@ -138,10 +146,23 @@ class RobotVision(Node):
                     continue
 
                 if inNN != None:
-                    detections = inNN.detections
-                    #print("got detections")
+                    tracklets = inNN.tracklets
+
+                    if print_detections:
+                        for tracklet in tracklets:
+                            print("------------")
+                            print(tracklet.id)
+                            print(tracklet.label)
+                            roi = tracklet.roi.denormalize(640, 360)
+                            print("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
+                            print("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
+                            print("lable %s, conf %f, xmin %f, ymin %f, xmax %f, ymax %f" % (tracklet.srcImgDetection.label, \
+                                tracklet.srcImgDetection.confidence, tracklet.srcImgDetection.xmin, tracklet.srcImgDetection.ymin, \
+                                tracklet.srcImgDetection.xmax, tracklet.srcImgDetection.ymax))
+                            print(tracklet.status)
+
                     # Publish detections
-                    self.publish_detections(detections)
+                    self.publish_detections(tracklets)
 
                 if inPreviewCAM == None:
                     continue
@@ -170,10 +191,8 @@ class RobotVision(Node):
                     startTime = current_time
 
                 disp_cnt += 1
-                #show_frame = (disp_cnt % 2) == 0
                 show_frame = False
                 pub_frame = (disp_cnt % 2) == 0
-                #pub_frame = True
 
                 if human_pose and human_pose_process:
                     frameCAMOrig = frameCAM.copy()
@@ -185,9 +204,28 @@ class RobotVision(Node):
                         #regions = blaze_pose.pd_postprocess(inference, frame_size_lm)
                         blaze_pose.pd_render(frameCAM, frame_size_lm, xoffset)
 
+                        # Try to find a region (person) that corresponds to the
+                        # the detected person reported by the Tracker node
+                        sel_region = None
+                        if self.tracked_obj != None and self.tracked_obj.confidence > 0.0:
+                            tracked_x = (self.tracked_obj.x_min + self.tracked_obj.x_max)/2
+                            closest_diff = 0.0
+
+                            for i,r in enumerate(regions):
+                                # Calc normalized center of detected person
+                                x = ((r.rect_points[0][1] + r.rect_points[3][1])/2 + xoffset)/widthCAM
+                                diff = abs(x - tracked_x)
+                                #print("region= %d, x center= %f, tracked_x= %f" % (i, x, tracked_x))
+                                if sel_region == None or closest_diff > diff:
+                                    sel_region = i
+                                    closest_diff = diff
+
                         # Landmarks
                         blaze_pose.nb_active_regions = 0
                         for i,r in enumerate(regions):
+                            if i != sel_region:
+                                continue
+
                             video_frame = frameCAMOrig[0:(frame_size_lm+1),xoffset:(xoffset+frame_size_lm)]
                             frame_nn = mpu.warp_rect_img(r.rect_points, video_frame, blaze_pose.lm_input_length, blaze_pose.lm_input_length)
 
@@ -209,8 +247,6 @@ class RobotVision(Node):
                         if blaze_pose.nb_active_regions == 0:
                             last_region = None
                             last_pose = None
-                    else:
-                        last_poses = None
 
                 if show_depth:
                     depth = depthQueue.get()
@@ -219,8 +255,11 @@ class RobotVision(Node):
                     depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
                     depthFrameColor = cv2.equalizeHist(depthFrameColor)
                     depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
-                    if len(detections) != 0:
-                        boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
+
+                    #if len(detections) != 0:
+
+                    boundingBoxMapping = xoutBoundingBoxDepthMapping.get()
+                    if boundingBoxMapping != None:
                         roiDatas = boundingBoxMapping.getConfigData()
 
                         for roiData in roiDatas:
@@ -251,20 +290,19 @@ class RobotVision(Node):
                         OverlayTextOnBox(frameCAM, 0, 0, 10, 10, [line1, line2], (0, 0, 0), 0.4, font, 0.6, white, 1)
 
                     # Display detections
-                    for detection in detections:
+                    for tracklet in tracklets:
                         try:
-                            label = labelMap[detection.label]
+                            label = labelMap[tracklet.label]
                         except:
-                            label = detection.label
-                        if label != 'person':
+                            label = tracklet.label
+                        if label != 'person' or tracklet.status != dai.Tracklet.TrackingStatus.TRACKED:
                             continue
 
                         # Denormalize bounding box
-                        # Approx scaling of detection BBs
-                        x1 = int(detection.xmin*widthCAM)
-                        x2 = int(detection.xmax*widthCAM)
-                        y1 = int(detection.ymin*heightCAM)
-                        y2 = int(detection.ymax*heightCAM)
+                        x1 = int(tracklet.srcImgDetection.xmin*widthCAM)
+                        x2 = int(tracklet.srcImgDetection.xmax*widthCAM)
+                        y1 = int(tracklet.srcImgDetection.ymin*heightCAM)
+                        y2 = int(tracklet.srcImgDetection.ymax*heightCAM)
 
                         if flipCAM:
                             swap = x2
@@ -274,17 +312,13 @@ class RobotVision(Node):
                         y1 = max(0, y1)
                         y2 = max(0, y2)
 
-                        conf = "{:d}%".format(int(detection.confidence*100))
-                        pos_x = f"x: {int(detection.spatialCoordinates.z)}"
-                        pos_y = f"y: {int(detection.spatialCoordinates.x)*-1}"
-                        pos_z = f"z: {int(detection.spatialCoordinates.y)}"
-
-                        OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [conf, pos_x, pos_y, pos_z], (0, 0, 0), 0.4, font, font_scale, white, 1)
-
-                        #if pose_last is not None:
-                        #    cv2.getTextSize(text, font, font_scale, thickness)
-                        #    cv2.putText(frameCAM, f"PoseL: {pose_last['left']}", (x1 + 10, y1 + 95), font, font_scale, color)
-                        #    cv2.putText(frameCAM, f"PoseR: {pose_last['right']}", (x1 + 10, y1 + 110), font, font_scale, color)
+                        if self.tracked_obj != None and self.tracked_obj.id == tracklet.id:
+                            conf = "{:d}%".format(int(tracklet.srcImgDetection.confidence*100))
+                            pos_x = f"x: {int(tracklet.spatialCoordinates.z)}"
+                            pos_y = f"y: {int(tracklet.spatialCoordinates.x)*-1}"
+                            pos_z = f"z: {int(tracklet.spatialCoordinates.y)}"
+                            trk_id = f'id: {tracklet.id}'
+                            OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [conf, pos_x, pos_y, pos_z, trk_id], (0, 0, 0), 0.4, font, font_scale, white, 1)
 
                         cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
 
@@ -321,6 +355,7 @@ class RobotVision(Node):
         # Stereo Depth
         stereo = pipeline.createStereoDepth()
         stereo.setConfidenceThreshold(255)
+        #stereo.setMedianFilter(dai.StereoDepthProperties.MedianFilter.KERNEL_7x7)
         # Its inputs
         monoLeft.out.link(stereo.left)
         monoRight.out.link(stereo.right)
@@ -357,6 +392,19 @@ class RobotVision(Node):
         #colorCam.preview.link(spatialDetectionNetwork.input)
         stereo.depth.link(spatialDetectionNetwork.inputDepth)
 
+        if use_tracker:
+            # Create object tracker
+            objectTracker = pipeline.createObjectTracker()
+            # track only person
+            objectTracker.setDetectionLabelsToTrack([15])
+            # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS
+            objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_COLOR_HISTOGRAM)
+            objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.UNIQUE_ID)
+            # Its input
+            spatialDetectionNetwork.passthrough.link(objectTracker.inputTrackerFrame)
+            spatialDetectionNetwork.passthrough.link(objectTracker.inputDetectionFrame)
+            spatialDetectionNetwork.out.link(objectTracker.inputDetections)
+
         # Create outputs to the host
         xoutCam = pipeline.createXLinkOut()
         xoutCam.setStreamName("cam_out")
@@ -379,7 +427,11 @@ class RobotVision(Node):
 
         nnOut = pipeline.createXLinkOut()
         nnOut.setStreamName("detections")
-        spatialDetectionNetwork.out.link(nnOut.input)
+
+        if use_tracker:
+            objectTracker.out.link(nnOut.input)
+        else:
+            spatialDetectionNetwork.out.link(nnOut.input)
 
         ######################################################
         # Human Pose Detection, Blazepose
@@ -429,36 +481,37 @@ class RobotVision(Node):
         print("Pipeline created.")
         return pipeline
 
-    def publish_detections(self, detections):
+    def publish_detections(self, tracklets):
         # Build a message containing the objects.  Uses
         # a custom message format
         objList = []
 
-        for detection in detections:
+        for tracklet in tracklets:
             #label = 'person'
             try:
-                label = labelMap[detection.label]
+                label = labelMap[tracklet.label]
             except:
-                label = detection.label
+                label = tracklet.label
 
             # Hack to avoid false person detection of blank wall
-            if (label == 'person' and (detection.xmax - detection.xmin) > 0.7):
+            if (label == 'person' and (tracklet.srcImgDetection.xmax - tracklet.srcImgDetection.xmin) > 0.7):
                 continue
 
             #print(detection)
             desc = ObjectDesc()
-            desc.id = detection.label
+            desc.id = tracklet.id
+            desc.track_status = str(tracklet.status).split(".")[1]
             desc.name = label
-            desc.confidence = detection.confidence
+            desc.confidence = tracklet.srcImgDetection.confidence
             # Map to ROS convention
-            desc.x = detection.spatialCoordinates.z
-            desc.y = -1*detection.spatialCoordinates.x
-            desc.z = 0.0
+            desc.x = tracklet.spatialCoordinates.z
+            desc.y = -1*tracklet.spatialCoordinates.x
+            desc.z = tracklet.spatialCoordinates.y
             desc.c = 0
-            desc.x_min = detection.xmin
-            desc.x_max = detection.xmax
-            desc.y_min = detection.ymin
-            desc.y_max = detection.ymax
+            desc.x_min = tracklet.srcImgDetection.xmin
+            desc.x_max = tracklet.srcImgDetection.xmax
+            desc.y_min = tracklet.srcImgDetection.ymin
+            desc.y_max = tracklet.srcImgDetection.ymax
             objList += (desc,)
 
         # Publish the object message to our topic
@@ -481,11 +534,12 @@ class RobotVision(Node):
         if msg.enable is False:
             last_region = None
 
+    def tracked_callback(self, msg):
+        self.tracked_obj = msg
+
 def main(args=None):
     rclpy.init(args=args)
     depthai_publisher = RobotVision()
-
-    rclpy.spin(depthai_publisher)
 
     # Destroy the node explicitly
     # (optional - otherwise it will be done automatically

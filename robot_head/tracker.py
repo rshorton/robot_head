@@ -333,6 +333,8 @@ class CameraTracker(Node):
             self.speech_aoa_callback,
             2)
 
+        self.pub_tracked = self.create_publisher(ObjectDesc, '/head/tracked', 1)
+
         #self.sub_pose = self.create_subscription(
         #    PoseStamped,
         #    '/robot_pose',
@@ -378,6 +380,9 @@ class CameraTracker(Node):
         self.track_new_level = 0
         self.track_voice_detect = True
         self.track_turn_base = True
+
+        self.last_detected_person = None
+        self.last_detected_time = None
         self.last_voice_track = 0
 
         self.track_base_track_vel = 0.0
@@ -445,6 +450,47 @@ class CameraTracker(Node):
         msg.angular.z = self.track_base_track_vel
         self.pub_cmd_vel.publish(msg)
 
+    def update_trackee(self, detections):
+        detected_person = None
+        publish = False
+
+        if detections != None:
+            for det in detections:
+                if det.name != 'person' or \
+                    det.confidence < min_track_confidence or \
+                    det.track_status != "TRACKED":
+                    continue
+
+                if self.last_detected_person != None and \
+                    self.last_detected_person.id == det.id:
+                    #print("Same id %d, %s" % (det.id, det.track_status))
+
+                    if det.track_status == "TRACKED":
+                        # Currently tracked person is still detected
+                        detected_person = self.last_detected_person = det
+                        self.last_detected_time = time.monotonic()
+                        publish = True
+                    else:
+                        detected_person = None
+                    break;
+
+                # Select the closest person
+                # x is according to ROS conventions (pointing away from camera)
+                if detected_person == None or detected_person.x > det.x:
+                    detected_person = det
+
+        # Delay a bit before switching away to different person
+        if self.last_detected_person == None or \
+            (time.monotonic() - self.last_detected_time > 1.0):
+            self.last_detected_person = detected_person
+            self.last_detected_time = time.monotonic()
+            publish = True
+            #print("Now tracking: %s" % ("none" if detected_person == None else detected_person.id))
+
+        if publish:
+            self.publish_tracked(detected_person)
+        return detected_person
+
     def tracker_thread(self):
         rot_cnt = 0
         track_cnt = 0
@@ -478,27 +524,15 @@ class CameraTracker(Node):
                 self.track_new_mode = None
                 self.publish_scan_status()
 
-            # Check for objects of interest
-            closest_person = None
-            if self.detections != None:
-                cnt = len(self.detections)
-                if cnt > 0:
-                    for obj in self.detections:
-                        if obj.name != 'person' or obj.confidence < min_track_confidence:
-                            continue
-                        if closest_person != None:
-                            # x is according to ROS conventions (pointing away from camera)
-                            if closest_person.x >  obj.x:
-                                closest_person = obj
-                        else:
-                            closest_person = obj
+            # Process the current detections to determine who to track
+            detected_person = self.update_trackee(self.detections)
 
             if self.track_cmd_mode == "Scan":
                 self.update_scan()
                 self.publish_scan_status()
 
             elif self.track_cmd_mode == "TrackScan":
-                if closest_person == None:
+                if detected_person == None:
                     self.update_scan()
                     # Go back to track mode if scan completed without seeing a person
                     if self.scan_active == False:
@@ -513,7 +547,7 @@ class CameraTracker(Node):
 
                     # If no object detect is detected but sound was detected, then
                     # scan in the direction of the sound.
-                    if closest_person == None and \
+                    if detected_person == None and \
                         self.track_voice_detect and \
                         self.sound_aoa != None and \
                         time.monotonic() - self.last_voice_track > 10.0:
@@ -533,8 +567,8 @@ class CameraTracker(Node):
                         self.last_voice_track = time.monotonic()
 
                     else:
-                        self.servo_pan.update(closest_person)
-                        self.servo_tilt.update(closest_person)
+                        self.servo_pan.update(detected_person)
+                        self.servo_tilt.update(detected_person)
 
                     self.sound_aoa = None
                     self.broadcast_camera_joints()
@@ -547,8 +581,9 @@ class CameraTracker(Node):
             if self.detections != None and time.monotonic() - self.detections_time > 1.0:
                 self.detections = None
 
-            if closest_person == None:
+            if detected_person == None:
                 self.stop_base_pose_tracking()
+                self.last_detected_time == None
 
             self.broadcast_camera_joints()
 
@@ -625,6 +660,13 @@ class CameraTracker(Node):
             self.servo_pan.auto_center()
             self.scan_active = False
 
+    def publish_tracked(self, detection):
+        msg = ObjectDesc()
+        if detection != None:
+            msg = detection
+        else:
+            msg.confidence = 0.0
+        self.pub_tracked.publish(msg)
 
     def publish_scan_status(self):
         scan_status = ScanStatus()
