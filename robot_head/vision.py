@@ -247,6 +247,8 @@ class RobotVision(Node):
                         if blaze_pose.nb_active_regions == 0:
                             last_region = None
                             last_pose = None
+                    else:
+                        last_poses = None
 
                 if show_depth:
                     depth = depthQueue.get()
@@ -284,10 +286,12 @@ class RobotVision(Node):
                     if flipCAM:
                         frameCAM = cv2.flip(frameCAM, 1)
 
-                    if last_poses is not None:
-                        line1 = f"PoseL: {last_poses['left']}"
-                        line2 = f"PoseR: {last_poses['right']}"
-                        OverlayTextOnBox(frameCAM, 0, 0, 10, 10, [line1, line2], (0, 0, 0), 0.4, font, 0.6, white, 1)
+                    if last_poses != None:
+                        lp = last_poses['left']
+                        rp = last_poses['right']
+                    else:
+                        lp = rp = "none"
+                    OverlayTextOnBox(frameCAM, 0, 0, 10, 10, [f"PoseL: {lp}", f"PoseR: {rp}"], (0, 0, 0), 0.4, font, 0.6, white, 1)
 
                     # Display detections
                     for tracklet in tracklets:
@@ -536,6 +540,7 @@ class RobotVision(Node):
 
     def tracked_callback(self, msg):
         self.tracked_obj = msg
+        #print("tracked_callback, id= %d" % msg.id)
 
 def main(args=None):
     rclpy.init(args=args)

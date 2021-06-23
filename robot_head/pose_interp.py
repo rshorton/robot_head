@@ -72,7 +72,7 @@ def pose_from_angles(s, e):
         elif s > -100 and s < -45 and e > -180 and e < -140:
             return "TouchingNeck"
 
-    return "Unknown"
+    return "none"
 
 def detect_pose_side(side, w, e, s, os):
     w = np.array(w)
