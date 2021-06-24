@@ -550,7 +550,7 @@ class CameraTracker(Node):
                     if detected_person == None and \
                         self.track_voice_detect and \
                         self.sound_aoa != None and \
-                        time.monotonic() - self.last_voice_track > 10.0:
+                        time.monotonic() - self.last_voice_track > 5.0:
 
                         # Mic AOA angle
                         #    225
