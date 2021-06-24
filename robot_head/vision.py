@@ -33,9 +33,25 @@ cam_out_use_preview = True
 use_tracker = True
 print_detections = False
 syncNN = False
+use_tyolo_v4 = False
 
-labelMap = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
-            "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+labelMap_MNetSSD = [
+    "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
+    "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+
+labelMap_TYolo4 = [
+    "person",         "bicycle",    "car",           "motorbike",     "aeroplane",   "bus",           "train",
+    "truck",          "boat",       "traffic light", "fire hydrant",  "stop sign",   "parking meter", "bench",
+    "bird",           "cat",        "dog",           "horse",         "sheep",       "cow",           "elephant",
+    "bear",           "zebra",      "giraffe",       "backpack",      "umbrella",    "handbag",       "tie",
+    "suitcase",       "frisbee",    "skis",          "snowboard",     "sports ball", "kite",          "baseball bat",
+    "baseball glove", "skateboard", "surfboard",     "tennis racket", "bottle",      "wine glass",    "cup",
+    "fork",           "knife",      "spoon",         "bowl",          "banana",      "apple",         "sandwich",
+    "orange",         "broccoli",   "carrot",        "hot dog",       "pizza",       "donut",         "cake",
+    "chair",          "sofa",       "pottedplant",   "bed",           "diningtable", "toilet",        "tvmonitor",
+    "laptop",         "mouse",      "remote",        "keyboard",      "cell phone",  "microwave",     "oven",
+    "toaster",        "sink",       "refrigerator",  "book",          "clock",       "vase",          "scissors",
+    "teddy bear",     "hair drier", "toothbrush"]
 
 def get_model_path(model_name):
     return str(pathlib.Path(__file__).parent.absolute()) + '/models/' + model_name
@@ -151,12 +167,17 @@ class RobotVision(Node):
                     if print_detections:
                         for tracklet in tracklets:
                             print("------------")
-                            print(tracklet.id)
-                            print(tracklet.label)
+                            print("id: %d" % tracklet.id)
+                            print("label: %s" % self.labelMap[tracklet.label])
                             roi = tracklet.roi.denormalize(640, 360)
                             print("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
                             print("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
-                            print("lable %s, conf %f, xmin %f, ymin %f, xmax %f, ymax %f" % (tracklet.srcImgDetection.label, \
+
+                            #if tracklet.srcImgDetection.label != "NoneType":
+                            #    label = labelMap[tracklet.srcImgDetection.label]
+                            #else:
+                            #    label = "none"
+                            print("label %s, conf %f, xmin %f, ymin %f, xmax %f, ymax %f" % (self.labelMap[int(tracklet.srcImgDetection.label)], \
                                 tracklet.srcImgDetection.confidence, tracklet.srcImgDetection.xmin, tracklet.srcImgDetection.ymin, \
                                 tracklet.srcImgDetection.xmax, tracklet.srcImgDetection.ymax))
                             print(tracklet.status)
@@ -296,7 +317,7 @@ class RobotVision(Node):
                     # Display detections
                     for tracklet in tracklets:
                         try:
-                            label = labelMap[tracklet.label]
+                            label = self.labelMap[tracklet.label]
                         except:
                             label = tracklet.label
                         if label != 'person' or tracklet.status != dai.Tracklet.TrackingStatus.TRACKED:
@@ -378,14 +399,34 @@ class RobotVision(Node):
         colorCam.setIspScale((1,3))
 
         manip_mn = pipeline.createImageManip()
-        manip_mn.initialConfig.setResize(300, 300)
+        if use_tyolo_v4:
+            manip_mn.initialConfig.setResize(416, 416)
+        else:
+            manip_mn.initialConfig.setResize(300, 300)
         #manip_mn.setKeepAspectRatio(True)
         manip_mn.setKeepAspectRatio(False)
         colorCam.preview.link(manip_mn.inputImage)
 
-        spatialDetectionNetwork = pipeline.createMobileNetSpatialDetectionNetwork()
-        spatialDetectionNetwork.setConfidenceThreshold(0.5)
-        spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
+        if use_tyolo_v4:
+            spatialDetectionNetwork = pipeline.createYoloSpatialDetectionNetwork()
+            spatialDetectionNetwork.setBlobPath(get_model_path('tiny-yolo-v4_openvino_2021.2_6shave.blob'))
+            spatialDetectionNetwork.setNumClasses(80)
+            spatialDetectionNetwork.setCoordinateSize(4)
+            spatialDetectionNetwork.setAnchors(np.array([10,14, 23,27, 37,58, 81,82, 135,169, 344,319]))
+            spatialDetectionNetwork.setAnchorMasks({ "side26": np.array([1,2,3]), "side13": np.array([3,4,5]) })
+            spatialDetectionNetwork.setIouThreshold(0.5)
+            self.labelMap = labelMap_TYolo4
+            # person
+            track_types = [0, 67]
+        else:
+            spatialDetectionNetwork = pipeline.createMobileNetSpatialDetectionNetwork()
+            spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
+            self.labelMap = labelMap_MNetSSD
+            # person
+            track_types = [15]
+
+        spatialDetectionNetwork.setNumInferenceThreads(1)
+        spatialDetectionNetwork.setConfidenceThreshold(0.3)
         spatialDetectionNetwork.input.setQueueSize(1)
         spatialDetectionNetwork.input.setBlocking(False)
         spatialDetectionNetwork.setBoundingBoxScaleFactor(0.3)
@@ -400,7 +441,7 @@ class RobotVision(Node):
             # Create object tracker
             objectTracker = pipeline.createObjectTracker()
             # track only person
-            objectTracker.setDetectionLabelsToTrack([15])
+            objectTracker.setDetectionLabelsToTrack(track_types)
             # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS
             objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_COLOR_HISTOGRAM)
             objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.UNIQUE_ID)
@@ -493,7 +534,7 @@ class RobotVision(Node):
         for tracklet in tracklets:
             #label = 'person'
             try:
-                label = labelMap[tracklet.label]
+                label = self.labelMap[tracklet.label]
             except:
                 label = tracklet.label
 
@@ -505,7 +546,7 @@ class RobotVision(Node):
             desc = ObjectDesc()
             desc.id = tracklet.id
             desc.track_status = str(tracklet.status).split(".")[1]
-            desc.name = label
+            desc.name = str(label)
             desc.confidence = tracklet.srcImgDetection.confidence
             # Map to ROS convention
             desc.x = tracklet.spatialCoordinates.z
