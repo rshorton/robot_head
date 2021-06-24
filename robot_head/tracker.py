@@ -189,7 +189,7 @@ class CameraServo:
 
             if self.joint == "pan":
                 pos = (obj.x_min + obj.x_max)/2
-                self.obj_ave = self.obj_ave*0.7 + pos*0.3
+                self.obj_ave = self.obj_ave*0.5 + pos*0.5
 
                 diff = 0.5 - self.obj_ave
                 adj = diff * 20.0
