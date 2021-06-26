@@ -16,7 +16,7 @@ from std_msgs.msg import String
 from std_msgs.msg import Bool
 from std_msgs.msg import Int32
 
-from face_control_interfaces.msg import Smile, HeadTilt, Track, ScanStatus, Antenna
+from face_control_interfaces.msg import Smile, HeadTilt, Track, TrackStatus, ScanStatus, Antenna
 
 # Custom object detection messages
 from object_detection_msgs.msg import ObjectDescArray
@@ -189,7 +189,7 @@ class CameraServo:
 
             if self.joint == "pan":
                 pos = (obj.x_min + obj.x_max)/2
-                self.obj_ave = self.obj_ave*0.5 + pos*0.5
+                self.obj_ave = self.obj_ave*0.4 + pos*0.6
 
                 diff = 0.5 - self.obj_ave
                 adj = diff * 20.0
@@ -333,7 +333,7 @@ class CameraTracker(Node):
             self.speech_aoa_callback,
             2)
 
-        self.pub_tracked = self.create_publisher(ObjectDesc, '/head/tracked', 1)
+        self.pub_tracked = self.create_publisher(TrackStatus, '/head/tracked', 1)
 
         #self.sub_pose = self.create_subscription(
         #    PoseStamped,
@@ -379,10 +379,12 @@ class CameraTracker(Node):
         self.track_new_mode = None
         self.track_new_level = 0
         self.track_voice_detect = True
-        self.track_turn_base = True
+        self.track_turn_base = False
+        self.track_object_type = 'person'
 
-        self.last_detected_person = None
+        self.last_tracked_object = None
         self.last_detected_time = None
+        self.detected_time = time.monotonic()
         self.last_voice_track = 0
 
         self.track_base_track_vel = 0.0
@@ -426,7 +428,7 @@ class CameraTracker(Node):
         self.thread.start()
 
     def stop_base_pose_tracking(self):
-        if abs(self.track_base_track_vel) > 0.0:
+        if self.track_base_track_vel != 0.0:
             self.track_base_track_vel = 0.0
             msg = Twist()
             msg.angular.z = self.track_base_track_vel
@@ -444,52 +446,62 @@ class CameraTracker(Node):
         if abs(self.servo_pan.get_servo_degrees()) > 20.0:
             self.track_base_track_vel = math.copysign(0.1, self.track_base_track_pan_ave)
         else:
+            if self.track_base_track_vel == 0.0:
+                return
             self.track_base_track_vel = 0.0
 
         msg = Twist()
         msg.angular.z = self.track_base_track_vel
         self.pub_cmd_vel.publish(msg)
 
-    def update_trackee(self, detections):
-        detected_person = None
+    def update_tracking(self, detections):
+        tracked_object = None
         publish = False
 
         if detections != None:
             for det in detections:
-                if det.name != 'person' or \
+                if det.name != self.track_object_type or \
                     det.confidence < min_track_confidence or \
                     det.track_status != "TRACKED":
                     continue
 
-                if self.last_detected_person != None and \
-                    self.last_detected_person.id == det.id:
+                if self.last_tracked_object != None and \
+                    self.last_tracked_object.id == det.id:
                     #print("Same id %d, %s" % (det.id, det.track_status))
 
                     if det.track_status == "TRACKED":
-                        # Currently tracked person is still detected
-                        detected_person = self.last_detected_person = det
+                        # Currently tracked object is still detected
+                        tracked_object = self.last_tracked_object = det
                         self.last_detected_time = time.monotonic()
                         publish = True
                     else:
-                        detected_person = None
+                        tracked_object = None
                     break;
 
                 # Select the closest person
                 # x is according to ROS conventions (pointing away from camera)
-                if detected_person == None or detected_person.x > det.x:
-                    detected_person = det
+                if tracked_object == None or tracked_object.x > det.x:
+                    tracked_object = det
 
         # Delay a bit before switching away to different person
-        if self.last_detected_person == None or \
+        if self.last_tracked_object == None or \
             (time.monotonic() - self.last_detected_time > 1.0):
-            self.last_detected_person = detected_person
+
+            # Reset the start time of tracking/not tracking if
+            # transitioning from not tracking to tracking or
+            # vice versa (but not on each timeout while not
+            # tracking)
+            if self.last_tracked_object != None:
+                self.detected_time = time.monotonic()
+
+            self.last_tracked_object = tracked_object
             self.last_detected_time = time.monotonic()
             publish = True
-            #print("Now tracking: %s" % ("none" if detected_person == None else detected_person.id))
+            #print("Now tracking: %s" % ("none" if tracked_object == None else tracked_object.id))
 
         if publish:
-            self.publish_tracked(detected_person)
-        return detected_person
+            self.publish_tracked(tracked_object)
+        return tracked_object
 
     def tracker_thread(self):
         rot_cnt = 0
@@ -525,14 +537,14 @@ class CameraTracker(Node):
                 self.publish_scan_status()
 
             # Process the current detections to determine who to track
-            detected_person = self.update_trackee(self.detections)
+            tracked_object = self.update_tracking(self.detections)
 
             if self.track_cmd_mode == "Scan":
                 self.update_scan()
                 self.publish_scan_status()
 
             elif self.track_cmd_mode == "TrackScan":
-                if detected_person == None:
+                if tracked_object == None:
                     self.update_scan()
                     # Go back to track mode if scan completed without seeing a person
                     if self.scan_active == False:
@@ -547,7 +559,7 @@ class CameraTracker(Node):
 
                     # If no object detect is detected but sound was detected, then
                     # scan in the direction of the sound.
-                    if detected_person == None and \
+                    if tracked_object == None and \
                         self.track_voice_detect and \
                         self.sound_aoa != None and \
                         time.monotonic() - self.last_voice_track > 5.0:
@@ -567,8 +579,8 @@ class CameraTracker(Node):
                         self.last_voice_track = time.monotonic()
 
                     else:
-                        self.servo_pan.update(detected_person)
-                        self.servo_tilt.update(detected_person)
+                        self.servo_pan.update(tracked_object)
+                        self.servo_tilt.update(tracked_object)
 
                     self.sound_aoa = None
                     self.broadcast_camera_joints()
@@ -581,7 +593,7 @@ class CameraTracker(Node):
             if self.detections != None and time.monotonic() - self.detections_time > 1.0:
                 self.detections = None
 
-            if detected_person == None:
+            if tracked_object == None:
                 self.stop_base_pose_tracking()
                 self.last_detected_time == None
 
@@ -661,11 +673,14 @@ class CameraTracker(Node):
             self.scan_active = False
 
     def publish_tracked(self, detection):
-        msg = ObjectDesc()
+        msg = TrackStatus()
         if detection != None:
-            msg = detection
+            msg.object = detection
+            msg.tracking = True
         else:
-            msg.confidence = 0.0
+            msg.tracking = False
+        # Duration tracked/not tracked
+        msg.duration = time.monotonic() - self.detected_time
         self.pub_tracked.publish(msg)
 
     def publish_scan_status(self):
@@ -732,10 +747,10 @@ class CameraTracker(Node):
             self.smile_level_def = msg.level
 
     def track_callback(self, msg):
-        self.get_logger().info('Received track msg: mode: %s, rate: %s' % (msg.mode, msg.rate))
+        self.get_logger().info('Received track msg: mode: %s, rate: %s turn_base: %d' % (msg.mode, msg.rate, msg.turn_base))
         self.track_new_mode = msg.mode
         self.track_voice_detect = msg.voice_detect
-        self.tracK_turn_base = msg.turn_base
+        self.track_turn_base = msg.turn_base
         self.scan_step = int(msg.rate)
 
     def set_smile(self):

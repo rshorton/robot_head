@@ -14,13 +14,12 @@ from rclpy.node import Node
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 
-from pose_interp import analyze_pose
-
-# Custom object detection messages
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
-
+from face_control_interfaces.msg import TrackStatus
 from human_pose_interfaces.msg import DetectedPose, EnablePoseDetection
+
+from pose_interp import analyze_pose
 
 import mediapipe_utils as mpu
 from BlazeposeDepthai import BlazeposeDepthai, to_planar
@@ -104,14 +103,14 @@ class RobotVision(Node):
             1)
 
         self.subTracked = self.create_subscription(
-            ObjectDesc,
+            TrackStatus,
             '/head/tracked',
             self.tracked_callback,
             1)
 
         self.setWinPos = True
 
-        self.tracked_obj = None
+        self.tracked = None
 
         pose_last = None
 
@@ -228,8 +227,8 @@ class RobotVision(Node):
                         # Try to find a region (person) that corresponds to the
                         # the detected person reported by the Tracker node
                         sel_region = None
-                        if self.tracked_obj != None and self.tracked_obj.confidence > 0.0:
-                            tracked_x = (self.tracked_obj.x_min + self.tracked_obj.x_max)/2
+                        if self.tracked != None and self.tracked.tracking:
+                            tracked_x = (self.tracked.object.x_min + self.tracked.object.x_max)/2
                             closest_diff = 0.0
 
                             for i,r in enumerate(regions):
@@ -337,7 +336,7 @@ class RobotVision(Node):
                         y1 = max(0, y1)
                         y2 = max(0, y2)
 
-                        if self.tracked_obj != None and self.tracked_obj.id == tracklet.id:
+                        if self.tracked != None and self.tracked.object.id == tracklet.id:
                             conf = "{:d}%".format(int(tracklet.srcImgDetection.confidence*100))
                             pos_x = f"x: {int(tracklet.spatialCoordinates.z)}"
                             pos_y = f"y: {int(tracklet.spatialCoordinates.x)*-1}"
@@ -580,7 +579,7 @@ class RobotVision(Node):
             last_region = None
 
     def tracked_callback(self, msg):
-        self.tracked_obj = msg
+        self.tracked = msg
         #print("tracked_callback, id= %d" % msg.id)
 
 def main(args=None):
