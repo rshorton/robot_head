@@ -56,25 +56,29 @@ def get_model_path(model_name):
     return str(pathlib.Path(__file__).parent.absolute()) + '/models/' + model_name
 
 def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_scale, text_color, text_thick):
-    w = 0
-    hmax = 0
-    for t in text:
-        (tw, th) = cv2.getTextSize(t, font, fontScale=font_scale, thickness=text_thick)[0]
-        w = max(w, 2*xpad + tw)
-        hmax = max(hmax, th)
-    h = (ypad + hmax)*len(text) + ypad
+    #Fix
+    try:
+        w = 0
+        hmax = 0
+        for t in text:
+            (tw, th) = cv2.getTextSize(t, font, fontScale=font_scale, thickness=text_thick)[0]
+            w = max(w, 2*xpad + tw)
+            hmax = max(hmax, th)
+        h = (ypad + hmax)*len(text) + ypad
 
-    sub = img[y:y+h, x:x+w]
-    bg = np.zeros_like(sub)
-    bg[:] = bg_color
-    blend = cv2.addWeighted(sub, 1.0 - alpha, bg, alpha, 0)
+        sub = img[y:y+h, x:x+w]
+        bg = np.zeros_like(sub)
+        bg[:] = bg_color
+        blend = cv2.addWeighted(sub, 1.0 - alpha, bg, alpha, 0)
 
-    yy = 0
-    for t in text:
-        cv2.putText(blend, t, (xpad, yy + ypad + hmax), font, font_scale, text_color, text_thick, cv2.LINE_AA)
-        yy += ypad + hmax
-    img[y:y+h, x:x+w] = blend
-    return x, y, x + w, y + h
+        yy = 0
+        for t in text:
+            cv2.putText(blend, t, (xpad, yy + ypad + hmax), font, font_scale, text_color, text_thick, cv2.LINE_AA)
+            yy += ypad + hmax
+        img[y:y+h, x:x+w] = blend
+        return x, y, x + w, y + h
+    except:
+        return None
 
 class RobotVision(Node):
     def __init__(self):
@@ -144,7 +148,7 @@ class RobotVision(Node):
             font_scale = 0.5
             disp_cnt = 0
 
-            flipCAM = True
+            flipCAM = False
 
             last_region = None
             last_poses = None
