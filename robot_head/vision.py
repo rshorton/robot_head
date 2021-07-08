@@ -16,7 +16,7 @@ from sensor_msgs.msg import Image
 
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
-from face_control_interfaces.msg import TrackStatus
+from face_control_interfaces.msg import TrackStatus, SaveImage
 from human_pose_interfaces.msg import DetectedPose, EnablePoseDetection
 
 from pose_interp import analyze_pose
@@ -31,6 +31,7 @@ show_depth = False
 cam_out_use_preview = True
 use_tracker = True
 print_detections = False
+show_det_info = True
 syncNN = False
 use_tyolo_v4 = False
 
@@ -61,6 +62,8 @@ def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_sc
         w = 0
         hmax = 0
         for t in text:
+            if t == None:
+                continue
             (tw, th) = cv2.getTextSize(t, font, fontScale=font_scale, thickness=text_thick)[0]
             w = max(w, 2*xpad + tw)
             hmax = max(hmax, th)
@@ -73,6 +76,8 @@ def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_sc
 
         yy = 0
         for t in text:
+            if t == None:
+                continue
             cv2.putText(blend, t, (xpad, yy + ypad + hmax), font, font_scale, text_color, text_thick, cv2.LINE_AA)
             yy += ypad + hmax
         img[y:y+h, x:x+w] = blend
@@ -112,9 +117,16 @@ class RobotVision(Node):
             self.tracked_callback,
             1)
 
+        self.subSaveImage = self.create_subscription(
+            SaveImage,
+            '/head/save_image',
+            self.save_image_callback,
+            1)
+
         self.setWinPos = True
 
         self.tracked = None
+        self.save_image = None
 
         pose_last = None
 
@@ -148,10 +160,12 @@ class RobotVision(Node):
             font_scale = 0.5
             disp_cnt = 0
 
-            flipCAM = False
+            flipCAM = True
 
             last_region = None
             last_poses = None
+
+            save_cnt = 0
 
             while True:
 
@@ -340,8 +354,9 @@ class RobotVision(Node):
                         y1 = max(0, y1)
                         y2 = max(0, y2)
 
-                        if self.tracked != None and self.tracked.object.id == tracklet.id:
-                            conf = "{:d}%".format(int(tracklet.srcImgDetection.confidence*100))
+                        if show_det_info and self.tracked != None and self.tracked.object.id == tracklet.id:
+                            #conf = "{:d}%".format(int(tracklet.srcImgDetection.confidence*100))
+                            conf = None
                             pos_x = f"x: {int(tracklet.spatialCoordinates.z)}"
                             pos_y = f"y: {int(tracklet.spatialCoordinates.x)*-1}"
                             pos_z = f"z: {int(tracklet.spatialCoordinates.y)}"
@@ -362,6 +377,15 @@ class RobotVision(Node):
 
                     if pub_frame:
                         self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameCAM, "bgr8"))
+
+                    if self.save_image != None:
+                        if self.save_image.filepath.find("#") != -1:
+                            self.save_image.filepath = self.save_image.filepath.replace("#", str(save_cnt))
+                            save_cnt += 1
+
+                        cv2.imwrite(self.save_image.filepath, frameCAMOrig)
+                        print("Saved frame to [%s]" % self.save_image.filepath)
+                        self.save_image = None
 
                 if cv2.waitKey(1) == ord('q'):
                     break
@@ -585,6 +609,10 @@ class RobotVision(Node):
     def tracked_callback(self, msg):
         self.tracked = msg
         #print("tracked_callback, id= %d" % msg.id)
+
+    def save_image_callback(self, msg):
+        self.save_image = msg
+        #print("save_image_callback, fname= %s" % msg.filepath)
 
 def main(args=None):
     rclpy.init(args=args)
