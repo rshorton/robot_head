@@ -5,13 +5,12 @@
   <version>0.0.1</version>
   <description>Robot Head Control Node</description>
   <maintainer email="horton.rscott@gmail.com">Scott Horton</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache License 2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>face_control_interfaces</exec_depend>
-  <exec_depend>human_pose_interfaces</exec_depend>
+  <exec_depend>robot_head_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

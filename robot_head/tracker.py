@@ -1,11 +1,21 @@
+# Copyright 2021 Scott Horton
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import threading
 import sys
 import time
 import math
-
-import os
-import os.path
-from os import path
 
 import rclpy
 from rclpy.node import Node
@@ -16,11 +26,10 @@ from std_msgs.msg import String
 from std_msgs.msg import Bool
 from std_msgs.msg import Int32
 
-from face_control_interfaces.msg import Smile, HeadTilt, Track, TrackStatus, ScanStatus, Antenna
+from robot_head_interfaces.msg import Smile, HeadTilt, Track, TrackStatus, ScanStatus, Antenna
 
 # Custom object detection messages
-from object_detection_msgs.msg import ObjectDescArray
-from object_detection_msgs.msg import ObjectDesc
+from object_detection_msgs.msg import ObjectDescArray, ObjectDesc
 
 # Used for publishing the camera joint positions
 from sensor_msgs.msg import JointState
@@ -349,7 +358,7 @@ class CameraTracker(Node):
 
         self.pub_scan_status = self.create_publisher(ScanStatus, '/head/scan_status', qos_profile)
 
-        #self.goal_pub = self.create_publisher(PoseStamped, '/goal_update', qos_profile)
+        #self.pub_obj_pos = self.create_publisher(PoseStamped, '/tracked_object_map_position', qos_profile)
 
         #self.tfBuffer = tf2_ros.Buffer()
         #self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
@@ -378,8 +387,8 @@ class CameraTracker(Node):
         self.track_rate = 0
         self.track_new_mode = None
         self.track_new_level = 0
-        self.track_voice_detect = True
-        self.track_turn_base = False
+        self.track_voice_detect = False
+        self.track_turn_base = True
         self.track_object_type = 'person'
 
         self.last_tracked_object = None
@@ -435,8 +444,6 @@ class CameraTracker(Node):
             self.pub_cmd_vel.publish(msg)
 
     def update_base_pose_tracking(self):
-        #print("Update base pose, state= %s" % self.track_base_track_state)
-
         pan = self.servo_pan.get_servo_degrees();
         if self.track_base_track_pan_ave == None:
             self.track_base_track_pan_ave = pan
@@ -560,7 +567,7 @@ class CameraTracker(Node):
                     # If no object detect is detected but sound was detected, then
                     # scan in the direction of the sound.
                     if tracked_object == None and \
-                        self.track_voice_detect and \
+                        self.track_voice_detect == True and \
                         self.sound_aoa != None and \
                         time.monotonic() - self.last_voice_track > 5.0:
 
@@ -570,6 +577,8 @@ class CameraTracker(Node):
                         #    45
                         # front of robot
                         #
+
+                        self.get_logger().info('Starting sound-triggered scan')
                         scan_left = self.sound_aoa > 45 and self.sound_aoa < 225
                         left_cnt = 1 if scan_left else 0
                         right_cnt = 0 if scan_left else 1
@@ -625,7 +634,7 @@ class CameraTracker(Node):
     #     msg.pose.orientation.w = 1.0;
     #
     #     map_pose = self.tfBuffer.transform(msg, "map")
-    #     self.goal_pub.publish(map_pose)
+    #     self.pub_obj_pos.publish(map_pose)
 
     # Broadcast the pan-tilt joints so ROS TF can be used to tranform positions
     # in the camera frame to other frames such as the map frame when navigating.

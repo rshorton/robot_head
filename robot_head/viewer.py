@@ -1,4 +1,4 @@
-# Copyright 2016 Open Source Robotics Foundation, Inc.
+# Copyright 2021 Scott Horton
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,23 +13,12 @@
 # limitations under the License.
 
 import rclpy
-import sys
 import cv2
-import json
-import math
-
-import msgpack
-import msgpack_numpy as m
-import numpy as np
 
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 
 from rclpy.node import Node
-
-# Used for publishing the camera joint positions
-from sensor_msgs.msg import JointState
-from rclpy.qos import QoSProfile
 
 class CameraViewer(Node):
     meta = []
