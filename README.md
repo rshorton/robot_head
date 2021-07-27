@@ -10,7 +10,7 @@ This ROS 2 package includes nodes which control the ElsaBot robot head with this
 Set the venv for the Depthai python dependencies before running. Example:
 
 ````
-pushd ~/depthai/depthai-python/; . venv/bin/activate; popd
+pushd ~/depthai-python/; . venv/bin/activate; popd
 
     (Revise the above command to use your install of DepthAi.)
 
