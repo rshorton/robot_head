@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Controls the camera/head tracking servos to keep a person in view.
+# Also controls the emotional output features (head tilt, smile, talking indicator).
+
 import threading
 import sys
 import time
@@ -165,9 +168,6 @@ class CameraServo:
         servo_kit.servo[self.chan].angle = pos
         self.servo_pos = pos_in
 
-        #if self.joint == 'tilt':
-        #    print("Set servo pos %s %d %d" % (self.joint, pos, pos_in))
-
     def get_servo_degrees(self):
         deg = (self.servo_pos - self.servo_midpos)*self.servo_degrees_per_step
         #print("servo pos: %d -> degrees: %f" % (self.servo_pos, deg))
@@ -234,8 +234,6 @@ class CameraServo:
                 self.move_steps = abs(diff)
             self.set_servo_pos(self.servo_pos + math.copysign(self.move_steps, diff))
 
-            #print("Moving %s %f" % (self.joint, self.servo_pos))
-
             if self.servo_pos == self.target_pos or \
                 self.servo_pos <= self.servo_minpos or \
                 self.servo_pos >= self.servo_maxpos:
@@ -259,97 +257,86 @@ class CameraServo:
                 self.target_pos = self.servo_midpos
                 self.move_steps = 3
 
-# From: https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
-def euler_from_quaternion(x, y, z, w):
-    """
-    Convert a quaternion into euler angles (roll, pitch, yaw)
-    roll is rotation around x in radians (counterclockwise)
-    pitch is rotation around y in radians (counterclockwise)
-    yaw is rotation around z in radians (counterclockwise)
-    """
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = math.atan2(t0, t1)
-
-    t2 = +2.0 * (w * y - z * x)
-    t2 = +1.0 if t2 > +1.0 else t2
-    t2 = -1.0 if t2 < -1.0 else t2
-    pitch_y = math.asin(t2)
-
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = math.atan2(t3, t4)
-
-    return roll_x, pitch_y, yaw_z # in radians
-
 class CameraTracker(Node):
     def __init__(self):
         super().__init__('camera_tracker')
 
         init_servo_driver()
 
+        # Topic for receiving smile display commands.
+        # These commands specify the smile level and/or temporary
+        # increased smile.
         self.sub_smile = self.create_subscription(
             Smile,
             '/head/smile',
             self.smile_callback,
             2)
 
+        # Topic for receiving message indicating when speech output is active.
+        # When active, the smile display is shows a 'talking' pattern instead
+        # of the current smile level.
         self.sub_speaking = self.create_subscription(
             Bool,
             '/head/speaking',
             self.speaking_callback,
             2)
 
+        # Topic for receiving message indicating when speech-to-text is active.
+        # When active, the antennae LEDs pattern is temporarily changed
+        # to a 'listening' pattern
         self.sub_listening = self.create_subscription(
             Bool,
             '/speech_detect/listening',
             self.listening_callback,
             2)
 
+        # Topic for receiving track mode command
         self.sub_track = self.create_subscription(
             Track,
             '/head/track',
             self.track_callback,
             2)
 
+        # Topic for receiving head twist command
         self.sub_head_rotation = self.create_subscription(
             HeadTilt,
             '/head/tilt',
             self.head_rotation_callback,
             2)
 
+        # Topic for receiving command to control Antennae pattern
         self.sub_antenna = self.create_subscription(
             Antenna,
             '/head/antenna',
             self.antenna_callback,
             2)
 
+        # Topic for receiving the list of detected objects from Vision node
         self.sub_obj_detection = self.create_subscription(
             ObjectDescArray,
             '/head/detected_objects',
             self.obj_detection_callback,
             2)
 
+        # Topic for receiving Voice Activity detection messages from speech input node
         self.sub_speech_vad = self.create_subscription(
             Bool,
             '/speech_detect/vad',
             self.speech_vad_callback,
             2)
 
+        # Topic for receiving sound angle-of-arrival messages from speech input node
         self.sub_speech_aoa = self.create_subscription(
             Int32,
             '/speech_detect/aoa',
             self.speech_aoa_callback,
             2)
 
+        # Topic for publishing which object is chosen for tracking
         self.pub_tracked = self.create_publisher(TrackStatus, '/head/tracked', 1)
 
-        #self.sub_pose = self.create_subscription(
-        #    PoseStamped,
-        #    '/robot_pose',
-        #    self.pose_callback,
-        #    1)
-
+        # Topic for controlling robot base for turning the robot in the direction
+        # of a detected person
         self.pub_cmd_vel = self.create_publisher(Twist, 'cmd_vel', 1)
 
         # Publisher for states of the pan-tilt joints
@@ -358,8 +345,8 @@ class CameraTracker(Node):
 
         self.pub_scan_status = self.create_publisher(ScanStatus, '/head/scan_status', qos_profile)
 
+        # See comment for publish_detected_pose
         #self.pub_obj_pos = self.create_publisher(PoseStamped, '/tracked_object_map_position', qos_profile)
-
         #self.tfBuffer = tf2_ros.Buffer()
         #self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
 
@@ -424,7 +411,6 @@ class CameraTracker(Node):
         self.listening = False
 
         self.smile_timer = self.create_timer(0.1, self.smile_timer_callback)
-
         self.antenna_timer = self.create_timer(0.1, self.antenna_timer_callback)
 
         self.detections = None
@@ -609,6 +595,8 @@ class CameraTracker(Node):
             self.broadcast_camera_joints()
 
     # Does not work since RCLPY does not support this yet (4/2021 Rolling release)
+    # As a workaround, the 'tracked_object_mapper' node is used for this function.
+    #
     # def publish_detected_pose(self, obj):
     #     try:
     #         self.tf_map_to_oakd = self.tfBuffer.lookup_transform("map", "oakd",
@@ -721,16 +709,12 @@ class CameraTracker(Node):
             self.head_rot_steps *= self.head_rot_dir
             self.head_rot_dwell_ticks = int((self.head_rot_cmd_dwell_dur + 99)/100)
 
-            #print("head_rot_steps= %d, dir= %d" % (self.head_rot_steps, self.head_rot_dir))
-
         if self.head_rot_steps > 0:
             self.servo_head_rotate.set_servo_pos(self.servo_head_rotate.servo_pos + self.head_rot_dir*10)
             self.head_rot_steps -= 10
-            #print("head_rot_steps= %d, dir= %d, servo_pos %d" % (self.head_rot_steps, self.head_rot_dir, self.servo_head_rotate.servo_pos))
 
         elif self.head_rot_dwell_ticks > 0:
             self.head_rot_dwell_ticks -= 1
-            #print("head_rot_dwell_ticks= %d" % (self.head_rot_dwell_ticks))
 
             if self.head_rot_dwell_ticks == 0:
                 self.head_rot_steps = self.servo_head_rotate.servo_midpos - self.servo_head_rotate.servo_pos
@@ -741,7 +725,6 @@ class CameraTracker(Node):
                     self.head_rot_dir = 1
 
                 self.head_rot_steps *= self.head_rot_dir
-                #print("head_rot_steps= %d, dir= %d" % (self.head_rot_steps, self.head_rot_dir))
 
     def smile_timer_callback(self):
         self.update_smile()
@@ -770,8 +753,6 @@ class CameraTracker(Node):
         if self.smile_cmd_mode != None:
             mode = self.smile_cmd_mode
             self.smile_cmd_mode = None
-
-            print("New Smile cmd: %s" % mode)
 
             if mode != self.smile_mode:
                 if mode == "default":
@@ -809,8 +790,6 @@ class CameraTracker(Node):
             return
 
         if self.smile_delta != 0:
-            #print("smile_delta != 0, delta= %d" % self.smile_delta)
-
             self.smile_level = min(self.smile_level + self.smile_delta, len(smile_patterns) - 1)
             self.smile_leds = smile_patterns[self.smile_level]
             self.set_smile()
@@ -819,8 +798,6 @@ class CameraTracker(Node):
                 self.smile_delta = 0
 
         elif self.smile_duration > 0:
-            #print("self.smile_duration > 0:, smile_duration= %d" % self.smile_duration)
-
             self.smile_duration -= 1
             if self.smile_duration == 0 and self.smile_level != self.smile_level_def:
                 self.smile_delta = -1 if self.smile_level > self.smile_level_def else 1
@@ -832,7 +809,6 @@ class CameraTracker(Node):
             if self.smile_talk_index >= len(talk_patterns):
                 self.smile_talk_index = 1
 
-            #print("new self.smile_talk_index= %d" % self.smile_talk_index)
             self.smile_leds = talk_patterns[self.smile_talk_index]
             self.set_smile()
 
@@ -888,9 +864,6 @@ class CameraTracker(Node):
 
             self.antenna_left_idx, self.antenna_left_state = set_antenna(antenna_left_ch, self.antenna.left_blink_pattern, self.antenna_left_idx, self.antenna_left_state)
             self.antenna_right_idx, self.antenna_right_state = set_antenna(antenna_right_ch, self.antenna.right_blink_pattern, self.antenna_right_idx, self.antenna_right_state)
-
-        #else:
-        #    print("Antenna cnt: %u" % self.antenna_update_cnt)
 
     def listening_callback(self, msg):
         self.get_logger().info('Received listening active msg: speaking: %d' % msg.data)

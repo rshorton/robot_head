@@ -12,6 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Interpret a few poses from the Blazepose human pose output from the
+# calculated shoulder and elbow angles:
+#  Hand on head
+#  Hand above head
+#  Hand on shoulder
+#  Hand on hip
+#  Arm stretched out
+#  Arm to side
+#  Touching neck
+#  Touching stomach
+
 import numpy as np
 import copy
 import math

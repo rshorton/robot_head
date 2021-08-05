@@ -74,6 +74,7 @@ labelMap_TYolo4 = [
 def get_model_path(model_name):
     return str(pathlib.Path(__file__).parent.absolute()) + '/models/' + model_name
 
+# Helper for displaying overlay text on an image
 def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_scale, text_color, text_thick):
     #Fix
     try:
@@ -108,6 +109,7 @@ class RobotVision(Node):
         super().__init__('robot_vision')
 
         self.image = None
+        # Publisher for camera color image
         self.imagePub = self.create_publisher(Image, '/color/image', 10)
         self.bridge = CvBridge()
 
@@ -117,24 +119,28 @@ class RobotVision(Node):
             '/head/detected_objects',
             10)
 
-        # Publisher for pose
+        # Publisher for detected human pose
         self.posePublisher = self.create_publisher(
             DetectedPose,
             '/head/detected_pose',
              1)
 
+        # Subscribe to topic for enabling/disabling pose detection
         self.subPoseDetectEnable = self.create_subscription(
             EnablePoseDetection,
             '/head/enable_pose_detect',
             self.pose_detect_enable_callback,
             1)
 
+        # Subscribe to topic specifying which object is being
+        # tracked by the Tracker node
         self.subTracked = self.create_subscription(
             TrackStatus,
             '/head/tracked',
             self.tracked_callback,
             1)
 
+        # Subscribe to topic for triggering an image save
         self.subSaveImage = self.create_subscription(
             SaveImage,
             '/head/save_image',
@@ -199,6 +205,7 @@ class RobotVision(Node):
                 if inNN != None:
                     tracklets = inNN.tracklets
 
+                    # For debug
                     if print_detections:
                         for tracklet in tracklets:
                             print("------------")
@@ -229,12 +236,9 @@ class RobotVision(Node):
                     print("Failed to read preview frame")
                     continue
 
-                #print('got cam frame')
-
                 # The Pose landmark NN input needs to be square.
                 # Determine the xoffset on the left and right side of the image around
                 # the square area.  This assumes a wider than taller image.
-                #print("frame size %s" % str(frameCAM.shape))
                 heightCAM, widthCAM = frameCAM.shape[0:2]
                 frame_size_lm = heightCAM
                 xoffset = int((widthCAM - frame_size_lm)/2)
@@ -250,6 +254,7 @@ class RobotVision(Node):
                 show_frame = False
                 pub_frame = (disp_cnt % 2) == 0
 
+                # Blazepose post/host-side processing
                 if human_pose and human_pose_process:
                     frameCAMOrig = frameCAM.copy()
 
@@ -257,7 +262,6 @@ class RobotVision(Node):
                     inference = q_pd_out.tryGet()
                     if inference != None:
                         regions = blaze_pose.pd_postprocess(inference, frame_size_lm)
-                        #regions = blaze_pose.pd_postprocess(inference, frame_size_lm)
                         blaze_pose.pd_render(frameCAM, frame_size_lm, xoffset)
 
                         # Try to find a region (person) that corresponds to the
@@ -306,6 +310,7 @@ class RobotVision(Node):
                     else:
                         last_poses = None
 
+                # For debug
                 if show_depth:
                     depth = depthQueue.get()
                     depthFrame = depth.getFrame()
@@ -334,6 +339,7 @@ class RobotVision(Node):
 
                     cv2.imshow("depth", depthFrameColor)
 
+                # Image annotations
                 if show_frame or pub_frame:
 
                     if last_region != None:
@@ -385,17 +391,19 @@ class RobotVision(Node):
 
                     OverlayTextOnBox(frameCAM, 0, frameCAM.shape[0] - 25, 5, 5, ["fps: {:.2f}".format(fps)], (0, 0, 0), 0.4, font, font_scale, white, 1)
 
-                    #cv2.putText(frameCAM, "fps: {:.2f}".format(fps), (2, frameCAM.shape[0] - 4), cv2.FONT_HERSHEY_TRIPLEX, 0.4, color)
-
+                    # Normally image is shown by Viewer node when showing
+                    # on robot display
                     if show_frame:
                         cv2.imshow("camera", frameCAM)
                         if self.setWinPos:
                             self.setWinPos = False
                             cv2.moveWindow("camera", 78, 30)
 
+                    # Publish image to other nodes
                     if pub_frame:
                         self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameCAM, "bgr8"))
 
+                    # Frame capture to file when commanded from another node
                     if self.save_image != None:
                         if self.save_image.filepath.find("#") != -1:
                             self.save_image.filepath = self.save_image.filepath.replace("#", str(save_cnt))
@@ -441,6 +449,7 @@ class RobotVision(Node):
         colorCam.setPreviewKeepAspectRatio(False)
 
         # Scale video from 1920x1080 to 640x360
+        # (This was a workaround for an issue with depthai)
         colorCam.setIspScale((1,3))
 
         manip_mn = pipeline.createImageManip()
@@ -452,6 +461,7 @@ class RobotVision(Node):
         manip_mn.setKeepAspectRatio(False)
         colorCam.preview.link(manip_mn.inputImage)
 
+        # Spatial detection network
         if use_tyolo_v4:
             spatialDetectionNetwork = pipeline.createYoloSpatialDetectionNetwork()
             spatialDetectionNetwork.setBlobPath(get_model_path('tiny-yolo-v4_openvino_2021.2_6shave.blob'))
@@ -571,13 +581,14 @@ class RobotVision(Node):
         print("Pipeline created.")
         return pipeline
 
+    # Publish detections to other ROS nodes
+    # Uses a custom message.
     def publish_detections(self, tracklets):
         # Build a message containing the objects.  Uses
         # a custom message format
         objList = []
 
         for tracklet in tracklets:
-            #label = 'person'
             try:
                 label = self.labelMap[tracklet.label]
             except:
@@ -609,6 +620,7 @@ class RobotVision(Node):
         msgObjects.objects = objList
         self.objectPublisher.publish(msgObjects)
 
+    # Publish the interpreted pose from the Blazepose detection
     def publish_poses(self, poses):
         msg = DetectedPose()
         msg.detected = poses["detected"]
@@ -617,6 +629,7 @@ class RobotVision(Node):
         msg.num_points = poses['num_points']
         self.posePublisher.publish(msg)
 
+    # Subscribed-to topic for enabling/disabling pose detection
     def pose_detect_enable_callback(self, msg):
         global human_pose_process
         self.get_logger().info('Received EnablePoseDetect msg: mode: %d' % msg.enable)
@@ -624,10 +637,13 @@ class RobotVision(Node):
         if msg.enable is False:
             last_region = None
 
+    # Subscribed-to topic specifying which object is of interest
+    # and should be annotated in the image.
     def tracked_callback(self, msg):
         self.tracked = msg
         #print("tracked_callback, id= %d" % msg.id)
 
+    # Subscribed-to topic for triggering an image capture
     def save_image_callback(self, msg):
         self.save_image = msg
         #print("save_image_callback, fname= %s" % msg.filepath)
