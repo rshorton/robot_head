@@ -42,16 +42,22 @@ from pose_interp import analyze_pose
 import mediapipe_utils as mpu
 from BlazeposeDepthai import BlazeposeDepthai, to_planar
 
-human_pose = True
+# Fix - not working since updating to latest Depthai - 
+human_pose = False
 human_pose_process = True
+
+ball_detect = True
 
 show_depth = False
 cam_out_use_preview = True
 use_tracker = True
 print_detections = False
 show_det_info = True
+show_edge_image = True
 syncNN = False
 use_tyolo_v4 = False
+
+frame_rate = 20.0
 
 labelMap_MNetSSD = [
     "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
@@ -119,6 +125,12 @@ class RobotVision(Node):
             '/head/detected_objects',
             10)
 
+        # Publisher for list of target objects
+        self.targetPublisher = self.create_publisher(
+            ObjectDescArray,
+            '/head/detected_targets',
+            10)
+
         # Publisher for detected human pose
         self.posePublisher = self.create_publisher(
             DetectedPose,
@@ -170,8 +182,14 @@ class RobotVision(Node):
                 q_pd_out = device.getOutputQueue(name="pd_out", maxSize=1, blocking=False)
                 q_lm_out = device.getOutputQueue(name="lm_out", maxSize=2, blocking=False)
                 q_lm_in = device.getInputQueue(name="lm_in")
+            if ball_detect:
+                edgeImgQueue = device.getOutputQueue(name="edge_image", maxSize=4, blocking=False)
+                ballDetectionNNQueue = device.getOutputQueue(name="ball_detections", maxSize=4, blocking=False)
 
             frame = None
+            edgeFrame = None
+            inEdgeFrame = None
+            inBallDetectNN = None
             tracklets = []
 
             startTime = time.monotonic()
@@ -193,11 +211,20 @@ class RobotVision(Node):
 
             while True:
 
-                rclpy.spin_once(self, timeout_sec=0.001);
+                rclpy.spin_once(self, timeout_sec=0.001)
 
                 try:
                     inPreviewCAM = previewQueueCAM.tryGet()
+
+#                    inPreviewCAM = previewQueueCAM.tryGet()
                     inNN = detectionNNQueue.tryGet()
+
+                    if ball_detect:
+                        if show_edge_image:
+                            inEdgeFrame = edgeImgQueue.tryGet()
+                        if inEdgeFrame:
+                            inBallDetectNN = ballDetectionNNQueue.tryGet()
+
                 except:
                     print("Failed to read from queue.")
                     continue
@@ -230,10 +257,42 @@ class RobotVision(Node):
                 if inPreviewCAM == None:
                     continue
 
+                if ball_detect and inEdgeFrame:
+                    try:
+                        edgeFrame = inEdgeFrame.getCvFrame()
+                    except:
+                        print("Failed to read edge frame")
+                    else:
+                        if show_edge_image:
+                            height = edgeFrame.shape[0]
+                            width = edgeFrame.shape[1]
+
+                            if inBallDetectNN != None:
+                                self.publish_target_detections(inBallDetectNN.detections)
+
+                                for detection in inBallDetectNN.detections:
+                                    # Denormalize bounding box
+                                    x1 = int(detection.xmin * width)
+                                    x2 = int(detection.xmax * width)
+                                    y1 = int(detection.ymin * height)
+                                    y2 = int(detection.ymax * height)
+
+                                    conf = "{:.2f}".format(detection.confidence*100)
+                                    print(f"Conf {conf}, bb {x1},{y1} - {x2},{y2}, xyz {int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)}, {int(detection.spatialCoordinates.z)}")
+
+                                    cv2.putText(edgeFrame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.25, color)
+                                    cv2.putText(edgeFrame, f"X: {int(detection.spatialCoordinates.x)}", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+                                    cv2.putText(edgeFrame, f"Y: {int(detection.spatialCoordinates.y)}", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+                                    cv2.putText(edgeFrame, f"Z: {int(detection.spatialCoordinates.z)}", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+
+                                    cv2.rectangle(edgeFrame, (x1, y1), (x2, y2), (255, 255, 0), cv2.FONT_HERSHEY_SIMPLEX)
+
+                            cv2.imshow("Edge", edgeFrame)
+   
                 try:
                     frameCAM = inPreviewCAM.getCvFrame()
                 except:
-                    print("Failed to read preview frame")
+                    print("Failed to read frame")
                     continue
 
                 # The Pose landmark NN input needs to be square.
@@ -416,19 +475,62 @@ class RobotVision(Node):
                 if cv2.waitKey(1) == ord('q'):
                     break
 
+    def create_ball_detector(self, pipeline, stereo):
+        imageManip = pipeline.create(dai.node.ImageManip)
+        imageManip.initialConfig.setResize(512, 320)
+        imageManip.setKeepAspectRatio(False)
+        # Its input
+        stereo.rectifiedRight.link(imageManip.inputImage)
+
+        edgeDetector = pipeline.create(dai.node.EdgeDetector)
+        # Its input
+        imageManip.out.link(edgeDetector.inputImage)
+
+        xoutEdge = pipeline.create(dai.node.XLinkOut)
+        xoutEdge.setStreamName("edge_image")
+        edgeDetector.outputImage.link(xoutEdge.input)
+
+        #return
+
+        spatialDetectionNetwork = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
+        spatialDetectionNetwork.setConfidenceThreshold(0.4)
+        spatialDetectionNetwork.setBlobPath(get_model_path('ball_detect_yolo_v4_tiny_openvino_2021.4_5shave.blob'))
+        spatialDetectionNetwork.setNumInferenceThreads(2)
+
+        spatialDetectionNetwork.input.setBlocking(False)
+        spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
+        spatialDetectionNetwork.setDepthLowerThreshold(100)
+        spatialDetectionNetwork.setDepthUpperThreshold(5000)
+
+        spatialDetectionNetwork.setNumClasses(1)
+        spatialDetectionNetwork.setCoordinateSize(4)
+        spatialDetectionNetwork.setAnchors(np.array([10,14, 23,27, 37,58, 81,82, 135,169, 344,319]))
+        spatialDetectionNetwork.setAnchorMasks({ "side32": np.array([0,1,2]), "side16": np.array([3,4,5]) })
+        spatialDetectionNetwork.setIouThreshold(0.5)
+        # Its inputs
+        stereo.depth.link(spatialDetectionNetwork.inputDepth)
+        edgeDetector.outputImage.link(spatialDetectionNetwork.input)
+
+        nnBallDetOut = pipeline.create(dai.node.XLinkOut)
+        nnBallDetOut.setStreamName("ball_detections")
+        # Its input
+        spatialDetectionNetwork.out.link(nnBallDetOut.input)
+        
+ 
     def create_pipeline(self):
         # Start defining a pipeline
         pipeline = dai.Pipeline()
-        pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_2)
+#        pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_2)
+        pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_4)
 
         monoLeft = pipeline.createMonoCamera()
         monoRight = pipeline.createMonoCamera()
         monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
         monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
-        monoLeft.setFps(10.0);
+        monoLeft.setFps(frame_rate);
         monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
         monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
-        monoLeft.setFps(10.0);
+        monoLeft.setFps(frame_rate);
 
         # Stereo Depth
         stereo = pipeline.createStereoDepth()
@@ -445,7 +547,7 @@ class RobotVision(Node):
         colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
         colorCam.setInterleaved(False)
         colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-        colorCam.setFps(10.0)
+        colorCam.setFps(frame_rate)
         colorCam.setPreviewKeepAspectRatio(False)
 
         # Scale video from 1920x1080 to 640x360
@@ -472,10 +574,11 @@ class RobotVision(Node):
             spatialDetectionNetwork.setIouThreshold(0.5)
             self.labelMap = labelMap_TYolo4
             # person
-            track_types = [0, 67]
+            track_types = [0]
         else:
             spatialDetectionNetwork = pipeline.createMobileNetSpatialDetectionNetwork()
-            spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
+#            spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
+            spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.4_5shave.blob'))
             self.labelMap = labelMap_MNetSSD
             # person
             track_types = [15]
@@ -499,7 +602,8 @@ class RobotVision(Node):
             objectTracker.setDetectionLabelsToTrack(track_types)
             # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS
             objectTracker.setTrackerType(dai.TrackerType.ZERO_TERM_COLOR_HISTOGRAM)
-            objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.UNIQUE_ID)
+            # Not in depthai 2.14.1.0
+            #objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.UNIQUE_ID)
             # Its input
             spatialDetectionNetwork.passthrough.link(objectTracker.inputTrackerFrame)
             spatialDetectionNetwork.passthrough.link(objectTracker.inputDetectionFrame)
@@ -532,6 +636,12 @@ class RobotVision(Node):
             objectTracker.out.link(nnOut.input)
         else:
             spatialDetectionNetwork.out.link(nnOut.input)
+
+        ######################################################
+        # Ball detector
+
+        if ball_detect:
+            self.create_ball_detector(pipeline, stereo)
 
         ######################################################
         # Human Pose Detection, Blazepose
@@ -600,6 +710,7 @@ class RobotVision(Node):
 
             #print(detection)
             desc = ObjectDesc()
+            desc.frame = "oakd"
             desc.id = tracklet.id
             desc.track_status = str(tracklet.status).split(".")[1]
             desc.name = str(label)
@@ -619,6 +730,36 @@ class RobotVision(Node):
         msgObjects = ObjectDescArray()
         msgObjects.objects = objList
         self.objectPublisher.publish(msgObjects)
+
+    # Publish detections to other ROS nodes
+    # Uses a custom message.
+    def publish_target_detections(self, detections):
+        # Build a message containing the objects.  Uses
+        # a custom message format
+        objList = []
+
+        for detection in detections:
+            desc = ObjectDesc()
+            desc.frame = "oakd"
+            desc.id = detection.label
+            desc.name = "ball"
+            desc.confidence = detection.confidence
+            # Map to ROS convention
+            desc.x = detection.spatialCoordinates.z
+            desc.y = -1*detection.spatialCoordinates.x
+            desc.z = detection.spatialCoordinates.y
+            desc.c = 0
+            desc.x_min = detection.xmin
+            desc.x_max = detection.xmax
+            desc.y_min = detection.ymin
+            desc.y_max = detection.ymax
+            objList += (desc,)
+
+        # Publish the object message to our topic
+        msgObjects = ObjectDescArray()
+        msgObjects.objects = objList
+        self.targetPublisher.publish(msgObjects)
+
 
     # Publish the interpreted pose from the Blazepose detection
     def publish_poses(self, poses):
