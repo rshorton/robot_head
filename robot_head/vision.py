@@ -35,7 +35,7 @@ from sensor_msgs.msg import Image
 
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
-from robot_head_interfaces.msg import TrackStatus, SaveImage, DetectedPose, EnablePoseDetection
+from robot_head_interfaces.msg import TrackStatus, SaveImage, DetectedPose, EnablePoseDetection, HeadImu
 
 from pose_interp import analyze_pose
 
@@ -56,8 +56,9 @@ show_det_info = True
 show_edge_image = True
 syncNN = False
 use_tyolo_v4 = False
+use_imu = True
 
-frame_rate = 20.0
+frame_rate = 15.0
 
 labelMap_MNetSSD = [
     "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
@@ -137,6 +138,12 @@ class RobotVision(Node):
             '/head/detected_pose',
              1)
 
+        # Publisher for head rotation
+        self.headImuPublisher = self.create_publisher(
+            HeadImu,
+            '/head/imu',
+             1)
+
         # Subscribe to topic for enabling/disabling pose detection
         self.subPoseDetectEnable = self.create_subscription(
             EnablePoseDetection,
@@ -185,11 +192,14 @@ class RobotVision(Node):
             if ball_detect:
                 edgeImgQueue = device.getOutputQueue(name="edge_image", maxSize=4, blocking=False)
                 ballDetectionNNQueue = device.getOutputQueue(name="ball_detections", maxSize=4, blocking=False)
+            if use_imu:
+                imuQueue = device.getOutputQueue(name="imu", maxSize=2, blocking=False)
 
             frame = None
             edgeFrame = None
             inEdgeFrame = None
             inBallDetectNN = None
+            imuData = None
             tracklets = []
 
             startTime = time.monotonic()
@@ -224,6 +234,9 @@ class RobotVision(Node):
                             inEdgeFrame = edgeImgQueue.tryGet()
                         if inEdgeFrame:
                             inBallDetectNN = ballDetectionNNQueue.tryGet()
+
+                    if use_imu:
+                        imuData = imuQueue.tryGet()
 
                 except:
                     print("Failed to read from queue.")
@@ -472,6 +485,13 @@ class RobotVision(Node):
                         print("Saved frame to [%s]" % self.save_image.filepath)
                         self.save_image = None
 
+                if use_imu and imuData != None:
+                    imuPackets = imuData.packets
+                    for imuPacket in imuPackets:
+                        rVvalues = imuPacket.rotationVector
+                        acceleroValues = imuPacket.acceleroMeter
+                        self.publish_head_rotation(rVvalues, acceleroValues)
+
                 if cv2.waitKey(1) == ord('q'):
                     break
 
@@ -515,8 +535,19 @@ class RobotVision(Node):
         nnBallDetOut.setStreamName("ball_detections")
         # Its input
         spatialDetectionNetwork.out.link(nnBallDetOut.input)
-        
- 
+    
+    def setup_imu(self, pipeline):
+        imu = pipeline.create(dai.node.IMU)
+        xlinkOut = pipeline.create(dai.node.XLinkOut)
+        xlinkOut.setStreamName("imu")
+
+        # enable ROTATION_VECTOR at 10 hz rate
+        imu.enableIMUSensor([dai.IMUSensor.ROTATION_VECTOR, dai.IMUSensor.ACCELEROMETER_RAW], 10)
+        imu.setBatchReportThreshold(1)
+        imu.setMaxBatchReports(10)
+        # Link plugins IMU -> XLINK
+        imu.out.link(xlinkOut.input)
+
     def create_pipeline(self):
         # Start defining a pipeline
         pipeline = dai.Pipeline()
@@ -688,6 +719,9 @@ class RobotVision(Node):
             lm_out.setStreamName("lm_out")
             lm_nn.out.link(lm_out.input)
 
+        if use_imu:
+            self.setup_imu(pipeline)
+
         print("Pipeline created.")
         return pipeline
 
@@ -788,6 +822,18 @@ class RobotVision(Node):
     def save_image_callback(self, msg):
         self.save_image = msg
         #print("save_image_callback, fname= %s" % msg.filepath)
+
+    # Publish the interpreted pose from the Blazepose detection
+    def publish_head_rotation(self, q, a):
+        msg = HeadImu()
+        msg.rotation.x = q.i
+        msg.rotation.y = q.j
+        msg.rotation.z = q.k
+        msg.rotation.w = q.real
+        msg.accelx = a.x
+        msg.accely = a.y
+        msg.accelz = a.z        
+        self.headImuPublisher.publish(msg)
 
 def main(args=None):
     rclpy.init(args=args)

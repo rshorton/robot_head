@@ -30,7 +30,7 @@ from std_msgs.msg import Bool
 from std_msgs.msg import Int32
 from std_msgs.msg import Float32
 
-from robot_head_interfaces.msg import Smile, HeadTilt, HeadPose, Track, TrackStatus, ScanStatus, Antenna
+from robot_head_interfaces.msg import Smile, HeadTilt, HeadPose, Track, TrackStatus, ScanStatus, Antenna, HeadImu
 
 # Custom object detection messages
 from object_detection_msgs.msg import ObjectDescArray, ObjectDesc
@@ -39,7 +39,7 @@ from object_detection_msgs.msg import ObjectDescArray, ObjectDesc
 from sensor_msgs.msg import JointState
 from rclpy.qos import QoSProfile
 
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, Twist, Quaternion
 import tf2_ros
 #from tf2_ros.transform_listener import TransformListener
 
@@ -84,6 +84,29 @@ antenna_right_ch = 11
 servo_inited = False
 servo_kit = None
 pca = None
+
+# From: https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
+def euler_from_quaternion(x, y, z, w):
+        """
+        Convert a quaternion into euler angles (roll, pitch, yaw)
+        roll is rotation around x in radians (counterclockwise)
+        pitch is rotation around y in radians (counterclockwise)
+        yaw is rotation around z in radians (counterclockwise)
+        """
+        t0 = +2.0 * (w * x + y * z)
+        t1 = +1.0 - 2.0 * (x * x + y * y)
+        roll_x = math.atan2(t0, t1)
+     
+        t2 = +2.0 * (w * y - z * x)
+        t2 = +1.0 if t2 > +1.0 else t2
+        t2 = -1.0 if t2 < -1.0 else t2
+        pitch_y = math.asin(t2)
+     
+        t3 = +2.0 * (w * z + x * y)
+        t4 = +1.0 - 2.0 * (y * y + z * z)
+        yaw_z = math.atan2(t3, t4)
+     
+        return roll_x, pitch_y, yaw_z # in radians
 
 def init_servo_driver():
     global servo_inited
@@ -176,7 +199,7 @@ class CameraServo:
         global servo_kit
         servo_kit.servo[self.chan].angle = pos
         self.servo_pos = pos_in
-        print("servo pos: %s, %d" % (self.joint, self.servo_pos))
+        #print("servo pos: %s, %d" % (self.joint, self.servo_pos))
 
     def set_servo_relative_pos(self, pos_pct):
         # + means up:  percent of range from center to max
@@ -355,6 +378,12 @@ class CameraTracker(Node):
             self.head_pose_callback,
             2)
 
+        # Topic for receiving head rotation quaternion from IMU
+        self.sub_head_rotation = self.create_subscription(
+            HeadImu,
+            '/head/imu',
+            self.head_imu_callback,
+            2)
 
         # Topic for receiving command to control Antennae pattern
         self.sub_antenna = self.create_subscription(
@@ -449,6 +478,8 @@ class CameraTracker(Node):
         self.head_rot_steps = 0
         self.head_rot_dwell_ticks = 0
 
+        self.head_imu = None
+
         # Create an object for controlling each pan-tilt base joint
         self.servo_pan = CameraServo("pan")
         self.servo_tilt = CameraServo("tilt")
@@ -526,7 +557,10 @@ class CameraTracker(Node):
                         # Currently tracked object is still detected
                         tracked_object = self.last_tracked_object = det
                         self.last_detected_time = time.monotonic()
-                        self.last_tracked_ave_pos = self.last_tracked_ave_pos*0.7 + [det.x, det.y, det.z]*0.3
+                        self.last_tracked_ave_pos[0] = self.last_tracked_ave_pos[0]*0.7 + det.x*0.3
+                        self.last_tracked_ave_pos[1] = self.last_tracked_ave_pos[1]*0.7 + det.y*0.3
+                        self.last_tracked_ave_pos[2] = self.last_tracked_ave_pos[2]*0.7 + det.z*0.3
+                        #self.last_tracked_ave_pos = self.last_tracked_ave_pos*0.7 + [det.x, det.y, det.z]*0.3
                         publish = True
                     else:
                         tracked_object = None
@@ -617,6 +651,8 @@ class CameraTracker(Node):
                     self.servo_pan.set_pos(self.servo_pan.get_servo_pos_from_degrees(self.pose_cmd.yaw))
                     self.servo_tilt.set_pos(self.servo_tilt.get_servo_pos_from_degrees(self.pose_cmd.pitch))
                     self.servo_rotate.set_pos(self.servo_rotate.get_servo_pos_from_degrees(self.pose_cmd.roll))
+                    self.get_logger().info('servo pos: pan, %d' % \
+                        (self.servo_pan.servo_pos))
                     self.pose_cmd = None
                     
                 if self.pan_manual_cmd != None:
@@ -716,6 +752,23 @@ class CameraTracker(Node):
         cam_tilt_rad = -1.0*self.servo_tilt.get_servo_degrees()/180.0*PI
 
         #print("Joint states, pan,tilt: %f  %f" % (cam_pan_rad, cam_tilt_rad))
+
+        # If IMU-based tilt measurement is available, then use it instead
+        # of the servo position since it should be more accurate
+        if self.head_imu != None:
+            a = -1*math.atan2(self.head_imu.accelz, self.head_imu.accely)
+            a_deg = a*180.0/math.pi
+            self.get_logger().debug('IMU tilt angle: %f (%f, %f)' % (a_deg, a, cam_tilt_rad))
+            cam_tilt_rad = a
+
+            #r,p,y = euler_from_quaternion(
+            #        self.head_rotation_imu_quat.x,
+            #        self.head_rotation_imu_quat.y,
+            #        self.head_rotation_imu_quat.z,
+            #        self.head_rotation_imu_quat.w)
+            #p_d = p*180.0/math.pi
+            #print(f"Using tilt from head rotation, Rad {p}, deg {p_d}")
+            #cam_tilt_rad = p
 
         now = self.get_clock().now()
         joint_state = JointState()
@@ -1010,6 +1063,9 @@ class CameraTracker(Node):
         #self.get_logger().info('Received pose')
         self.cur_pose = msg.pose
         self.cur_pose_valid = True
+
+    def head_imu_callback(self, msg):
+        self.head_imu = msg
 
 def main(args=None):
     rclpy.init(args=args)
