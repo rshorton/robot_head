@@ -19,6 +19,9 @@ import threading
 import sys
 import time
 import math
+import serial
+
+import lewansoul_lx16a
 
 import rclpy
 from rclpy.node import Node
@@ -31,6 +34,7 @@ from std_msgs.msg import Int32
 from std_msgs.msg import Float32
 
 from robot_head_interfaces.msg import Smile, HeadTilt, HeadPose, Track, TrackStatus, ScanStatus, Antenna, HeadImu
+from speech_action_interfaces.msg import Wakeword
 
 # Custom object detection messages
 from object_detection_msgs.msg import ObjectDescArray, ObjectDesc
@@ -43,47 +47,14 @@ from geometry_msgs.msg import PoseStamped, Twist, Quaternion
 import tf2_ros
 #from tf2_ros.transform_listener import TransformListener
 
-# Servo control - uses Adafruit ServoKit to drive
-# ADAFRUIT PCA9685 16-channel servo driver
 import time
-from adafruit_servokit import ServoKit
 
 min_track_confidence = 0.70
 
+SERIAL_PORT = '/dev/head_servo_driver'
+servo_ctrl = None
+
 PI = math.pi
-
-smile_led_map =   [1, 2, 3, 8, 4, 5, 6, 7, 9]
-smile_patterns = [[0, 0, 0, 1, 1, 1, 0, 0, 0],
-                  [0, 0, 1, 1, 1, 1, 1, 0, 0],
-                  [0, 1, 1, 1, 1, 1, 1, 1, 0],
-                  [1, 1, 1, 1, 1, 1, 1, 1, 1]]
-
-talk_patternsX =  [[0, 1, 1, 1, 0, 0, 0, 0, 0],
-                  [0, 0, 1, 1, 1, 0, 0, 0, 0],
-                  [0, 0, 0, 1, 1, 1, 0, 0, 0],
-                  [0, 0, 0, 0, 1, 1, 1, 0, 0],
-                  [0, 0, 0, 0, 0, 1, 1, 1, 0],
-                  [0, 0, 0, 0, 1, 1, 1, 0, 0],
-                  [0, 0, 0, 1, 1, 1, 0, 0, 0],
-                  [0, 0, 1, 1, 1, 0, 0, 0, 0],
-                  [0, 1, 1, 1, 0, 0, 0, 0, 0]];
-
-talk_patterns =  [[0, 1, 0, 1, 0, 0, 1, 0, 0],
-                  [0, 0, 1, 0, 1, 1, 0, 1, 0],
-                  [0, 1, 0, 1, 0, 1, 0, 0, 0],
-                  [0, 0, 1, 0, 1, 0, 1, 1, 0],
-                  [0, 0, 0, 1, 0, 1, 0, 1, 0],
-                  [0, 1, 1, 0, 0, 1, 1, 0, 0],
-                  [0, 0, 0, 1, 1, 0, 0, 0, 0],
-                  [0, 1, 0, 0, 1, 0, 0, 1, 0],
-                  [0, 0, 1, 1, 0, 0, 1, 0, 0]];
-
-antenna_left_ch = 10
-antenna_right_ch = 11
-
-servo_inited = False
-servo_kit = None
-pca = None
 
 # From: https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
 def euler_from_quaternion(x, y, z, w):
@@ -109,68 +80,61 @@ def euler_from_quaternion(x, y, z, w):
         return roll_x, pitch_y, yaw_z # in radians
 
 def init_servo_driver():
-    global servo_inited
-    global servo_kit
-    global pca
-    if not servo_inited:
-        servo_kit = ServoKit(channels=16, frequency=50)
-        servo_inited = True
-        pca = servo_kit._pca
+    global servo_ctrl
+    if servo_ctrl is None:
+        servo_ctrl = lewansoul_lx16a.ServoController(
+            serial.Serial(SERIAL_PORT, 115200, timeout=1))
 
 class CameraServo:
-    def __init__(self, joint):
+    def __init__(self, joint, logger):
         init_servo_driver()
-
+        self.logger = logger
         self.joint = joint
 
         if joint == "pan":
-            # Servo booard channel
-            self.chan = 12
-
+            self.chan = 1
             # Min/max/mid positions determined by experiment
-            self.servo_minpos = 10
-            self.servo_maxpos_cal = 170
-            self.servo_maxpos = 170
-            self.servo_midpos = 99
+            self.servo_minpos = 122
+            self.servo_midpos = 500
+            self.servo_maxpos = 870
 
-            self.servo_cal_min_servo = 35
-            self.servo_cal_min_deg = -42
-            self.servo_cal_max_servo = 156
-            self.servo_cal_max_deg = 42
+            self.servo_cal_min_servo = 122
+            self.servo_cal_min_deg = -90
+            self.servo_cal_max_servo = 870
+            self.servo_cal_max_deg = 90
+            self.servo_ms_per_degrees = 2000.0/180.0
 
         elif joint == "tilt":
-            self.chan = 13
+            self.chan = 2
+            self.servo_minpos = 0
+            self.servo_midpos = 225
+            self.servo_maxpos = 400
+            self.servo_maxpos_mech = 600
 
-            self.servo_minpos = 5
-            self.servo_maxpos = 150
-            self.servo_midpos = 81
-
-            self.servo_cal_min_servo = 55
-            self.servo_cal_min_deg = -24
-            self.servo_cal_max_servo = 112
-            self.servo_cal_max_deg = 24
+            self.servo_cal_min_servo = 0
+            self.servo_cal_min_deg = 60
+            self.servo_cal_max_servo = 600
+            self.servo_cal_max_deg = -90
+            self.servo_ms_per_degrees = 3000.0/180.0
 
         elif joint == "rotate":
-            self.chan = 14
+            self.chan = 3
+            self.servo_minpos = 300
+            self.servo_midpos = 500
+            self.servo_maxpos = 700
 
-            self.servo_minpos = 0
-            self.servo_maxpos = 150
-            self.servo_midpos = 88
-
-            self.servo_cal_min_servo = 88
-            self.servo_cal_min_deg = -45
-            self.servo_cal_max_servo = 150
-            self.servo_cal_max_deg = 65
+            self.servo_cal_min_servo = 300
+            self.servo_cal_min_deg = 51
+            self.servo_cal_max_servo = 700
+            self.servo_cal_max_deg = -51
+            self.servo_ms_per_degrees = 3000.0/180.0
 
         else:
             print("Invalid camera joint: %s" % joint)
             return
 
         self.servo_degrees_per_step = (self.servo_cal_max_deg - self.servo_cal_min_deg)/(self.servo_cal_max_servo - self.servo_cal_min_servo)
-
-        self.servo_pos = 0
-        # Steps per position adjustment
-        self.set_pos(self.servo_midpos)
+        self.servo_ms_per_step = self.servo_degrees_per_step*self.servo_ms_per_degrees
 
         self.obj_ave = 0.0
         self.obj_last_dir = 0
@@ -179,6 +143,9 @@ class CameraServo:
         self.target_pos = None
         self.move_steps = 1.0
         self.last_adj_by_voice = 0.0
+        self.servo_pos = self.get_pos()
+        ms = self.set_pos(self.servo_midpos)
+        time.sleep(ms/1000.0)
 
     def is_at_servo_limit(self):
         return  self.servo_pos <= self.servo_minpos or self.servo_pos >= self.servo_maxpos
@@ -194,12 +161,25 @@ class CameraServo:
             pos = self.servo_maxpos
         return pos
 
+    def calc_move_duration(self, pos):
+        #self.logger.info("calc_move_duration: %s, %f, %f ms/step" % (self.joint, pos - self.servo_pos, self.servo_ms_per_step))
+        ms = int(abs((pos - self.servo_pos)*self.servo_ms_per_step))
+        if ms < 50:
+            ms = 0
+        return ms
+
+    def get_pos(self):
+        return servo_ctrl.get_position(self.chan)
+
     def set_pos(self, pos_in):
         pos = self.limit_pos(pos_in)
-        global servo_kit
-        servo_kit.servo[self.chan].angle = pos
-        self.servo_pos = pos_in
-        #print("servo pos: %s, %d" % (self.joint, self.servo_pos))
+        ms = 0
+        if int(pos) != self.servo_pos:
+            ms = self.calc_move_duration(pos)
+            servo_ctrl.move(self.chan, pos, ms)
+            #self.logger.info("set servo pos: %s, %d -> %d, %d ms" % (self.joint, self.servo_pos, pos, ms))
+            self.servo_pos = int(pos_in)
+        return ms
 
     def set_servo_relative_pos(self, pos_pct):
         # + means up:  percent of range from center to max
@@ -213,7 +193,6 @@ class CameraServo:
         if pos != self.servo_pos:
             self.set_pos(pos)
             print("set_servo_relative_pos: %s, %f%%, %d %f deg" % (self.joint, pos_pct, self.servo_pos, self.get_servo_degrees()))
-
 
     def get_servo_degrees(self):
         deg = (self.servo_pos - self.servo_midpos)*self.servo_degrees_per_step
@@ -229,7 +208,6 @@ class CameraServo:
     def auto_center(self):
         self.auto_center_time = 0.0
         self.target_pos = self.servo_midpos
-        #self.set_pos(self.servo_midpos)
 
     def stop_tracking(self):
         self.obj_last_dir = 0
@@ -240,24 +218,21 @@ class CameraServo:
         if obj != None:
             #print('Joint: %s, Object to track: %f, %f [%f, %f]' % (self.joint, obj.x, obj.y, obj.x_min, obj.x_max))
 
-            factor = 0.0
-
             if self.joint == "pan":
                 pos = (obj.x_min + obj.x_max)/2
-                self.obj_ave = self.obj_ave*0.4 + pos*0.6
+                self.obj_ave = self.obj_ave*0.3 + pos*0.7
 
                 diff = 0.5 - self.obj_ave
-                adj = diff * 20.0
-                #if abs(adj) < 0.4:
-                if abs(adj) < 1.0:
+                adj = diff * 50.0
+                if abs(adj) < 5.0:
                     adj = 0.0
             else:
                 pos = obj.y_min
-                self.obj_ave = self.obj_ave*0.5 + pos*0.5
+                self.obj_ave = self.obj_ave*0.3 + pos*0.7
 
-                diff = 0.25 - self.obj_ave
-                adj = diff * 10.0
-                if abs(adj) < 1.0:
+                diff = -1*(0.25 - self.obj_ave)
+                adj = diff * 40.0
+                if abs(adj) < 5.0:
                     adj = 0.0
 
             self.obj_last_pos = pos
@@ -275,15 +250,8 @@ class CameraServo:
             self.last_adj_by_voice = 0.0
 
         elif self.target_pos != None:
-            diff = self.target_pos - self.servo_pos
-            if abs(diff) < self.move_steps:
-                self.move_steps = abs(diff)
-            self.set_pos(self.servo_pos + math.copysign(self.move_steps, diff))
-
-            if self.servo_pos == self.target_pos or \
-                self.servo_pos <= self.servo_minpos or \
-                self.servo_pos >= self.servo_maxpos:
-                self.target_pos = None;
+            self.set_pos(self.target_pos)
+            self.target_pos = None
 
         else:
             # No object visible now.
@@ -293,48 +261,20 @@ class CameraServo:
             # then return to center after a timeout.
             if False:
             #if self.obj_last_dir != 0:
-                self.set_pos(self.servo_pos + self.obj_last_dir*0.75)
+                self.set_pos(self.servo_pos + self.obj_last_dir*0.5)
                 self.auto_center_time = time.monotonic()
                 if self.is_at_servo_limit():
                     self.obj_last_dir = 0
             elif self.auto_center_time != 0.0 and time.monotonic() - self.auto_center_time > 6.0:
                 self.auto_center_time = 0.0
                 self.obj_last_dir = 0
-                self.target_pos = self.servo_midpos
-                self.move_steps = 3
+                self.set_pos(self.servo_midpos)
 
 class CameraTracker(Node):
     def __init__(self):
         super().__init__('camera_tracker')
 
         init_servo_driver()
-
-        # Topic for receiving smile display commands.
-        # These commands specify the smile level and/or temporary
-        # increased smile.
-        self.sub_smile = self.create_subscription(
-            Smile,
-            '/head/smile',
-            self.smile_callback,
-            2)
-
-        # Topic for receiving message indicating when speech output is active.
-        # When active, the smile display is shows a 'talking' pattern instead
-        # of the current smile level.
-        self.sub_speaking = self.create_subscription(
-            Bool,
-            '/head/speaking',
-            self.speaking_callback,
-            2)
-
-        # Topic for receiving message indicating when speech-to-text is active.
-        # When active, the antennae LEDs pattern is temporarily changed
-        # to a 'listening' pattern
-        self.sub_listening = self.create_subscription(
-            Bool,
-            '/speech_detect/listening',
-            self.listening_callback,
-            2)
 
         # Topic for receiving track mode command
         self.sub_track = self.create_subscription(
@@ -385,13 +325,6 @@ class CameraTracker(Node):
             self.head_imu_callback,
             2)
 
-        # Topic for receiving command to control Antennae pattern
-        self.sub_antenna = self.create_subscription(
-            Antenna,
-            '/head/antenna',
-            self.antenna_callback,
-            2)
-
         # Topic for receiving the list of detected objects from Vision node
         self.sub_obj_detection = self.create_subscription(
             ObjectDescArray,
@@ -413,6 +346,14 @@ class CameraTracker(Node):
             self.speech_aoa_callback,
             2)
 
+
+        # Topic for receiving wakeword event msg messages from speech input node
+        self.sub_speech_wakeword = self.create_subscription(
+            Wakeword,
+            '/speech_detect/wakeword',
+            self.speech_wakeword_callback,
+            2)
+
         # Topic for publishing which object is chosen for tracking
         self.pub_tracked = self.create_publisher(TrackStatus, '/head/tracked', 1)
 
@@ -431,32 +372,11 @@ class CameraTracker(Node):
         #self.tfBuffer = tf2_ros.Buffer()
         #self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
 
-        self.smile_mode_def = "smile"
-        self.smile_level_def = 0
-
-        self.smile_mode = self.smile_mode_def
-        self.smile_level = self.smile_level_def
-        self.smile_leds = smile_patterns[self.smile_level]
-
-        self.smile_duration = 0
-        self.smile_delta = 0
-        self.smile_target_level = 0
-
-        self.smile_cmd_mode = None
-        self.smile_cmd_level = 0
-        self.smile_cmd_duration_ms = 0
-
-        self.set_smile()
-
-        self.new_antenna = None
-        self.antenna = None
-
-        #self.track_cmd_mode = "Track"
-        self.track_cmd_mode = "None"
+        self.track_cmd_mode = "Track"
         self.track_rate = 0
         self.track_new_mode = None
         self.track_new_level = 0
-        self.track_voice_detect = False
+        self.sound_track_mode = None
         self.track_turn_base = True
         self.track_object_type = 'person'
 
@@ -481,9 +401,9 @@ class CameraTracker(Node):
         self.head_imu = None
 
         # Create an object for controlling each pan-tilt base joint
-        self.servo_pan = CameraServo("pan")
-        self.servo_tilt = CameraServo("tilt")
-        self.servo_rotate = CameraServo("rotate")
+        self.servo_pan = CameraServo("pan", self.get_logger())
+        self.servo_tilt = CameraServo("tilt", self.get_logger())
+        self.servo_rotate = CameraServo("rotate", self.get_logger())
         
         self.tilt_scan_pos = self.servo_tilt.servo_midpos - 5
         self.scan_left = True
@@ -498,10 +418,8 @@ class CameraTracker(Node):
 
         self.sound_aoa = None
         self.speech_detected = None
-        self.listening = False
-
-        self.smile_timer = self.create_timer(0.1, self.smile_timer_callback)
-        self.antenna_timer = self.create_timer(0.1, self.antenna_timer_callback)
+        self.sound_wakeword = None
+        self.sound_wakeword_aoa = None
 
         self.detections = None
         self.detections_time = None
@@ -526,8 +444,16 @@ class CameraTracker(Node):
         else:
             self.track_base_track_pan_ave = self.track_base_track_pan_ave*0.5 + pan*0.5
 
-        if abs(self.servo_pan.get_servo_degrees()) > 20.0:
-            self.track_base_track_vel = math.copysign(0.1, self.track_base_track_pan_ave)
+        pan = abs(pan)
+        vel = 0.0
+        # Turn if detected object more than 20deg off center.
+        if pan > 20.0:
+            vel = min(0.70, (pan - 20.0)*0.01 + 0.1)
+            self.track_base_track_vel += (vel - self.track_base_track_vel)*0.1
+            #self.get_logger().info("Base rot vel %f, pan= %f" % (vel, pan))
+
+        if vel > 0.0:
+            self.track_base_track_vel = math.copysign(vel, self.track_base_track_pan_ave)
         else:
             if self.track_base_track_vel == 0.0:
                 return
@@ -560,7 +486,6 @@ class CameraTracker(Node):
                         self.last_tracked_ave_pos[0] = self.last_tracked_ave_pos[0]*0.7 + det.x*0.3
                         self.last_tracked_ave_pos[1] = self.last_tracked_ave_pos[1]*0.7 + det.y*0.3
                         self.last_tracked_ave_pos[2] = self.last_tracked_ave_pos[2]*0.7 + det.z*0.3
-                        #self.last_tracked_ave_pos = self.last_tracked_ave_pos*0.7 + [det.x, det.y, det.z]*0.3
                         publish = True
                     else:
                         tracked_object = None
@@ -590,7 +515,6 @@ class CameraTracker(Node):
 
         if publish:
             if self.last_tracked_ave_pos != None:
-                print(self.last_tracked_ave_pos)
                 self.publish_tracked(tracked_object,
                     self.last_tracked_ave_pos[0],
                     self.last_tracked_ave_pos[1],
@@ -608,27 +532,27 @@ class CameraTracker(Node):
                 rot_cnt = 0
                 self.update_head_rotation()
 
-            if self.track_new_mode != None and \
-                self.track_new_mode != self.track_cmd_mode:
+            if self.track_new_mode != None:
+                if self.track_new_mode != self.track_cmd_mode:
+                    self.scan_active = False
+                    self.servo_pan.stop_tracking()
+                    self.servo_tilt.stop_tracking()
+                    self.stop_base_pose_tracking()
 
-                self.scan_active = False
-                self.servo_pan.stop_tracking()
-                self.servo_tilt.stop_tracking()
-                self.stop_base_pose_tracking()
+                    if self.track_new_mode == "LookDown":
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_minpos)
 
-                if self.track_new_mode == "LookDown":
-                    self.servo_tilt.set_pos(self.servo_tilt.servo_minpos)
+                    elif self.track_new_mode == "Scan":
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
+                        self.init_scan(True, False, 0, 0)
 
-                elif self.track_new_mode == "Scan":
-                    self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
-                    self.init_scan(True, False, 0, 0)
+                    elif self.track_new_mode == "Track":
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
 
-                elif self.track_new_mode == "Track":
-                    self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
+                    self.track_cmd_mode = self.track_new_mode
+                    self.publish_scan_status()
 
-                self.track_cmd_mode = self.track_new_mode
                 self.track_new_mode = None
-                self.publish_scan_status()
 
             # Process the current detections to determine who to track
             tracked_object = self.update_tracking(self.detections)
@@ -667,15 +591,18 @@ class CameraTracker(Node):
 
             if self.track_cmd_mode == "Track":
                 track_cnt += 1
-                if track_cnt >= 2:
+                if track_cnt >= 1:
                     track_cnt = 0
+
+                    #self.get_logger().info('tracked_object %d, voice_detect %d, sound_aoa= %s' % (tracked_object != None, self.sound_track_mode, str(self.sound_aoa)));
 
                     # If no object detect is detected but sound was detected, then
                     # scan in the direction of the sound.
                     if tracked_object == None and \
-                        self.track_voice_detect == True and \
-                        self.sound_aoa != None and \
-                        time.monotonic() - self.last_voice_track > 5.0:
+                        ((self.sound_track_mode == "any" and self.sound_aoa != None and time.monotonic() - self.last_voice_track > 5.0) or \
+                         (self.sound_track_mode == "wakeword" and self.sound_wakeword != None)):
+
+                        aoa = self.sound_wakeword_aoa if self.sound_wakeword != None else self.sound_aoa
 
                         # Mic AOA angle
                         #    225
@@ -683,21 +610,19 @@ class CameraTracker(Node):
                         #    45
                         # front of robot
                         #
-
-                        self.get_logger().info('Starting sound-triggered scan')
-                        scan_left = self.sound_aoa > 45 and self.sound_aoa < 225
+                        self.get_logger().info('Starting sound-triggered scan, sound aoa %d' % (aoa))
+                        scan_left = aoa > 45 and aoa < 225
                         left_cnt = 1 if scan_left else 0
                         right_cnt = 0 if scan_left else 1
                         self.init_scan(scan_left, True, left_cnt, right_cnt)
                         self.track_cmd_mode = "TrackScan"
-
-                        self.last_voice_track = time.monotonic()
 
                     else:
                         self.servo_pan.update(tracked_object)
                         self.servo_tilt.update(tracked_object)
 
                     self.sound_aoa = None
+                    self.sound_wakeword = None
                     self.broadcast_camera_joints()
 
                 if self.track_turn_base:
@@ -758,7 +683,7 @@ class CameraTracker(Node):
         if self.head_imu != None:
             a = -1*math.atan2(self.head_imu.accelz, self.head_imu.accely)
             a_deg = a*180.0/math.pi
-            self.get_logger().debug('IMU tilt angle: %f (%f, %f)' % (a_deg, a, cam_tilt_rad))
+            self.get_logger().info('IMU tilt angle: %f (%f, %f)' % (a_deg, a, cam_tilt_rad))
             cam_tilt_rad = a
 
             #r,p,y = euler_from_quaternion(
@@ -786,6 +711,9 @@ class CameraTracker(Node):
         self.scan_active = True
 
     def update_scan(self):
+        #self.get_logger().info('update_scan: scan_left %d, scan_at_left_count %d, scan_at_right_count %d, scan_stop_left_cnt %d, scan_stop_right_cnt %d, scan_limit_scans %d, scan_step %d' % \
+        #    (self.scan_left, self.scan_at_left_count, self.scan_at_right_count, self.scan_stop_left_cnt, self.scan_stop_right_cnt, \
+        #     self.scan_limit_scans, self.scan_step ))
         if self.scan_left:
             if self.servo_pan.servo_pos < self.servo_pan.servo_maxpos:
                 self.servo_pan.set_pos(self.servo_pan.servo_pos + self.scan_step)
@@ -800,10 +728,11 @@ class CameraTracker(Node):
                 self.scan_left = True
 
         if self.scan_limit_scans and \
-            self.scan_stop_left_cnt == self.scan_at_left_count and \
-            self.scan_stop_right_cnt == self.scan_at_right_count:
+            self.scan_stop_left_cnt <= self.scan_at_left_count and \
+            self.scan_stop_right_cnt <= self.scan_at_right_count:
             # Done scanning, go back to center
             self.servo_pan.auto_center()
+            self.last_voice_track = time.monotonic()
             self.scan_active = False
 
     def publish_tracked(self, detection, x_ave, y_ave, z_ave):
@@ -873,22 +802,10 @@ class CameraTracker(Node):
 
                 self.head_rot_steps *= self.head_rot_dir
 
-    def smile_timer_callback(self):
-        self.update_smile()
-
-    def smile_callback(self, msg):
-        self.get_logger().info('Received smile msg: mode: %s, level: %d, duration: %d, def: %s' % (msg.mode, msg.level, msg.duration_ms, msg.use_as_default))
-        self.smile_cmd_mode = msg.mode
-        self.smile_cmd_level = msg.level
-        self.smile_cmd_duration_ms = msg.duration_ms
-        if msg.use_as_default == True:
-            self.smile_mode_def = msg.mode
-            self.smile_level_def = msg.level
-
     def track_callback(self, msg):
-        self.get_logger().info('Received track msg: mode: %s, rate: %s turn_base: %d' % (msg.mode, msg.rate, msg.turn_base))
+        self.get_logger().info('Received track msg: mode: %s, rate: %s, sound_track_mode: %s, turn_base: %d' % (msg.mode, msg.rate, msg.sound_track_mode, msg.turn_base))
         self.track_new_mode = msg.mode
-        self.track_voice_detect = msg.voice_detect
+        self.sound_track_mode = msg.sound_track_mode
         self.track_turn_base = msg.turn_base
         self.scan_step = int(msg.rate)
         self.track_object_type = msg.object_type
@@ -911,141 +828,6 @@ class CameraTracker(Node):
         self.track_new_mode = "Manual"
         self.rotate_manual_cmd = msg.data
 
-    def set_smile(self):
-        for i in range(0, len(self.smile_leds)):
-            pca.channels[smile_led_map[i]].duty_cycle = 0 if self.smile_leds[i] else 65535
-
-    def update_smile(self):
-        if self.smile_cmd_mode != None:
-            mode = self.smile_cmd_mode
-            self.smile_cmd_mode = None
-
-            if mode != self.smile_mode:
-                if mode == "default":
-                    self.smile_mode = self.smile_mode_def
-                    self.smile_level = self.smile_level_def
-                    self.smile_leds = smile_patterns[self.smile_level]
-                    self.set_smile()
-
-                elif mode == "talking":
-                    self.smile_mode = mode
-                    self.smile_talk_index = 0
-                    self.smile_leds = talk_patterns[self.smile_talk_index]
-                    self.set_smile()
-
-                elif mode == "smile":
-                    self.smile_mode = mode
-                    self.smile_level = self.smile_cmd_level
-                    self.smile_leds = smile_patterns[self.smile_level]
-                    self.smile_delta = 0
-                    self.smile_duration = 0
-                    self.set_smile()
-
-            # Already smiling but a new level?
-            elif mode == "smile" and \
-                self.smile_level != self.smile_cmd_level and \
-                self.smile_cmd_level >= 0 and self.smile_cmd_level < len(smile_patterns):
-
-                self.smile_delta = -1 if self.smile_level > self.smile_cmd_level else 1
-                self.smile_target_level = self.smile_cmd_level
-
-                # Convert to timer updates
-                self.smile_duration = int((self.smile_cmd_duration_ms + 99)/100)
-                #print("smile_duration= %d" % self.smile_duration)
-
-            return
-
-        if self.smile_delta != 0:
-            self.smile_level = min(self.smile_level + self.smile_delta, len(smile_patterns) - 1)
-            self.smile_leds = smile_patterns[self.smile_level]
-            self.set_smile()
-
-            if self.smile_level == self.smile_target_level:
-                self.smile_delta = 0
-
-        elif self.smile_duration > 0:
-            self.smile_duration -= 1
-            if self.smile_duration == 0 and self.smile_level != self.smile_level_def:
-                self.smile_delta = -1 if self.smile_level > self.smile_level_def else 1
-                self.smile_target_level = self.smile_level_def
-                #print("new smile_delta, delta= %d" % self.smile_delta)
-
-        elif self.smile_mode == "talking":
-            self.smile_talk_index += 1
-            if self.smile_talk_index >= len(talk_patterns):
-                self.smile_talk_index = 1
-
-            self.smile_leds = talk_patterns[self.smile_talk_index]
-            self.set_smile()
-
-    def antenna_timer_callback(self):
-        self.update_antenna()
-
-    def antenna_callback(self, msg):
-        self.get_logger().info('Received antenna msg, left: %s, right: %s, rate: %d, intensity: %d' %
-                               (msg.left_blink_pattern, msg.right_blink_pattern, msg.rate, msg.intensity))
-        self.new_antenna = msg
-
-    def update_antenna(self):
-        reset = False
-
-        if self.listening:
-            pca.channels[antenna_left_ch].duty_cycle = 10000
-            pca.channels[antenna_right_ch].duty_cycle = 10000
-            return
-
-        if self.antenna == None:
-            self.antenna = Antenna()
-            self.antenna.left_blink_pattern =  '1010100000'
-            self.antenna.right_blink_pattern = '0000010101'
-            self.antenna.intensity = 50
-            self.antenna.rate = 1
-            reset = True
-
-        elif self.new_antenna != None:
-            self.antenna = self.new_antenna
-            self.new_antenna = None
-            reset = True
-
-        if reset:
-            self.antenna_left_idx = 0
-            self.antenna_right_idx = 0
-            self.antenna_update_cnt = 0
-            self.antenna_left_state = None
-            self.antenna_right_state = None
-
-        self.antenna_update_cnt -= 1
-        if self.antenna_update_cnt < 0:
-            self.antenna_update_cnt = self.antenna.rate
-            def set_antenna(side, pattern, idx, state):
-                idx -= 1
-                if idx < 0:
-                    idx = len(pattern) - 1
-                new_state = 65535 if pattern[idx] == '0' else self.antenna.intensity*500
-                if new_state != state:
-                    pca.channels[side].duty_cycle = new_state
-                    state = new_state
-                #print("Antenna updated: %s, idx= %u" % (side, idx))
-                return idx, state
-
-            self.antenna_left_idx, self.antenna_left_state = set_antenna(antenna_left_ch, self.antenna.left_blink_pattern, self.antenna_left_idx, self.antenna_left_state)
-            self.antenna_right_idx, self.antenna_right_state = set_antenna(antenna_right_ch, self.antenna.right_blink_pattern, self.antenna_right_idx, self.antenna_right_state)
-
-    def listening_callback(self, msg):
-        self.get_logger().info('Received listening active msg: speaking: %d' % msg.data)
-        self.listening = msg.data
-
-    def speaking_callback(self, msg):
-        self.get_logger().info('Received speaking active msg: speaking: %d' % msg.data)
-        if msg.data:
-            self.smile_cmd_mode = "talking"
-        # Go back to default smile when talking stops
-        elif self.smile_mode == "talking":
-            self.smile_cmd_mode = "default"
-        else:
-            return
-        self.update_smile()
-
     def speech_aoa_callback(self, msg):
         self.get_logger().info('Received speech AOA msg: angle: %d' % msg.data)
         self.sound_aoa = msg.data
@@ -1053,6 +835,11 @@ class CameraTracker(Node):
     def speech_vad_callback(self, msg):
         self.get_logger().info('Received speech VAD msg: detected: %d' % msg.data)
         self.speech_detected = msg.data
+
+    def speech_wakeword_callback(self, msg):
+        self.get_logger().info('Received speech wakeword msg: word: %s, angle: %d' % (msg.word, msg.angle))
+        self.sound_wakeword = msg.word
+        self.sound_wakeword_aoa = msg.angle
 
     def obj_detection_callback(self, msg):
         #self.get_logger().info('Received object detection msg')

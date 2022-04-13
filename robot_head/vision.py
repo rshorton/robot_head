@@ -57,6 +57,7 @@ show_edge_image = True
 syncNN = False
 use_tyolo_v4 = False
 use_imu = True
+pub_detection_frame = True
 
 frame_rate = 15.0
 
@@ -119,6 +120,9 @@ class RobotVision(Node):
         # Publisher for camera color image
         self.imagePub = self.create_publisher(Image, '/color/image', 10)
         self.bridge = CvBridge()
+
+        # Publisher for camera color image
+        self.detectionImagePub = self.create_publisher(Image, '/detection_image', 10)
 
         # Publisher for list of detected objects
         self.objectPublisher = self.create_publisher(
@@ -212,7 +216,7 @@ class RobotVision(Node):
             font_scale = 0.5
             disp_cnt = 0
 
-            flipCAM = True
+            flipCAM = False
 
             last_region = None
             last_poses = None
@@ -300,8 +304,10 @@ class RobotVision(Node):
 
                                     cv2.rectangle(edgeFrame, (x1, y1), (x2, y2), (255, 255, 0), cv2.FONT_HERSHEY_SIMPLEX)
 
-                            cv2.imshow("Edge", edgeFrame)
-   
+                            #cv2.imshow("Edge", edgeFrame)
+                            if pub_detection_frame:
+                                self.detectionImagePub.publish(self.bridge.cv2_to_imgmsg(edgeFrame, "mono8"))
+
                 try:
                     frameCAM = inPreviewCAM.getCvFrame()
                 except:
@@ -509,8 +515,6 @@ class RobotVision(Node):
         xoutEdge = pipeline.create(dai.node.XLinkOut)
         xoutEdge.setStreamName("edge_image")
         edgeDetector.outputImage.link(xoutEdge.input)
-
-        #return
 
         spatialDetectionNetwork = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
         spatialDetectionNetwork.setConfidenceThreshold(0.4)
@@ -744,7 +748,7 @@ class RobotVision(Node):
 
             #print(detection)
             desc = ObjectDesc()
-            desc.frame = "oakd"
+            desc.frame = "oakd_center_camera"
             desc.id = tracklet.id
             desc.track_status = str(tracklet.status).split(".")[1]
             desc.name = str(label)
@@ -774,7 +778,7 @@ class RobotVision(Node):
 
         for detection in detections:
             desc = ObjectDesc()
-            desc.frame = "oakd"
+            desc.frame = "oakd_right_camera"
             desc.id = detection.label
             desc.name = "ball"
             desc.confidence = detection.confidence
@@ -832,7 +836,8 @@ class RobotVision(Node):
         msg.rotation.w = q.real
         msg.accelx = a.x
         msg.accely = a.y
-        msg.accelz = a.z        
+        msg.accelz = a.z
+        #self.get_logger().info('accely: %f' % a.y)        
         self.headImuPublisher.publish(msg)
 
 def main(args=None):

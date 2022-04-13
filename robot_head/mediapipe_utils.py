@@ -9,6 +9,10 @@ from math import ceil, sqrt, exp, pi, floor, sin, cos, atan2
 import time
 from collections import deque, namedtuple
 
+# To not display: RuntimeWarning: overflow encountered in exp
+# in line:  scores = 1 / (1 + np.exp(-scores))
+np.seterr(over='ignore')
+
 class Region:
     def __init__(self, pd_score, pd_box, pd_kps=0):
         self.pd_score = pd_score # Pose detection score
