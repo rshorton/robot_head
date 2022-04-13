@@ -24,10 +24,12 @@ setup(
         'console_scripts': [
             'vision = robot_head.vision:main',
             'tracker = robot_head.tracker:main',
-            'viewer = robot_head.viewer:main'
+            'viewer = robot_head.viewer:main',
+            'face = robot_head.face:main'
         ],
     },
     scripts=['robot_head/pose_interp.py',
              'robot_head/BlazeposeDepthai.py',
-             'robot_head/mediapipe_utils.py']
+             'robot_head/mediapipe_utils.py',
+             'robot_head/lewansoul_lx16a.py']
 )
