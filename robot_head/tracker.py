@@ -108,8 +108,12 @@ class CameraServo:
             self.chan = 2
             self.servo_minpos = 0
             self.servo_midpos = 225
-            self.servo_maxpos = 400
+            # Fix - implement limits to avoid hitting shoulders
+            # This limit will clear shoulders
+            #self.servo_maxpos = 400
+            self.servo_maxpos = 530
             self.servo_maxpos_mech = 600
+
 
             self.servo_cal_min_servo = 0
             self.servo_cal_min_deg = 60
