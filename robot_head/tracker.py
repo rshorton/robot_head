@@ -403,6 +403,7 @@ class CameraTracker(Node):
         self.head_rot_dwell_ticks = 0
 
         self.head_imu = None
+        self.cam_tilt_rad_imu_ave = None
 
         # Create an object for controlling each pan-tilt base joint
         self.servo_pan = CameraServo("pan", self.get_logger())
@@ -686,9 +687,16 @@ class CameraTracker(Node):
         # of the servo position since it should be more accurate
         if self.head_imu != None:
             a = -1*math.atan2(self.head_imu.accelz, self.head_imu.accely)
-            a_deg = a*180.0/math.pi
-            self.get_logger().info('IMU tilt angle: %f (%f, %f)' % (a_deg, a, cam_tilt_rad))
-            cam_tilt_rad = a
+
+            if self.cam_tilt_rad_imu_ave == None:
+                self.cam_tilt_rad_imu_ave = a
+            else:
+                self.cam_tilt_rad_imu_ave = self.cam_tilt_rad_imu_ave*0.7 + a*0.3
+
+            a_deg = self.cam_tilt_rad_imu_ave*180.0/math.pi
+
+            self.get_logger().debug('IMU tilt angle: %f (%f, %f, %f)' % (a_deg, a, cam_tilt_rad, self.cam_tilt_rad_imu_ave))
+            cam_tilt_rad = self.cam_tilt_rad_imu_ave
 
             #r,p,y = euler_from_quaternion(
             #        self.head_rotation_imu_quat.x,
