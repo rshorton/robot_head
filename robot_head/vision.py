@@ -180,7 +180,7 @@ class RobotVision(Node):
         blaze_pose = BlazeposeDepthai(multi_detection = True)
 
         with dai.Device(self.create_pipeline()) as device:
-            print("Starting pipeline...")
+            self.get_logger().debug("Starting pipeline...")
             device.startPipeline()
 
             previewQueueCAM = device.getOutputQueue(name="cam_out", maxSize=1, blocking=False)
@@ -243,7 +243,7 @@ class RobotVision(Node):
                         imuData = imuQueue.tryGet()
 
                 except:
-                    print("Failed to read from queue.")
+                    self.get_logger().error("Failed to read from queue.")
                     continue
 
                 if inNN != None:
@@ -252,24 +252,24 @@ class RobotVision(Node):
                     # For debug
                     if print_detections:
                         for tracklet in tracklets:
-                            print("------------")
-                            print("id: %d" % tracklet.id)
-                            print("label: %s" % self.labelMap[tracklet.label])
+                            self.get_logger().debug("------------")
+                            self.get_logger().debug("id: %d" % tracklet.id)
+                            self.get_logger().debug("label: %s" % self.labelMap[tracklet.label])
                             roi = tracklet.roi.denormalize(640, 360)
-                            print("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
-                            print("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
+                            self.get_logger().debug("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
+                            self.get_logger().debug("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
 
                             #if tracklet.srcImgDetection.label != "NoneType":
                             #    label = labelMap[tracklet.srcImgDetection.label]
                             #else:
                             #    label = "none"
-                            print("label %s, conf %f, xmin %f, ymin %f, xmax %f, ymax %f" % (self.labelMap[int(tracklet.srcImgDetection.label)], \
+                            self.get_logger().debug("label %s, conf %f, xmin %f, ymin %f, xmax %f, ymax %f" % (self.labelMap[int(tracklet.srcImgDetection.label)], \
                                 tracklet.srcImgDetection.confidence, tracklet.srcImgDetection.xmin, tracklet.srcImgDetection.ymin, \
                                 tracklet.srcImgDetection.xmax, tracklet.srcImgDetection.ymax))
-                            print(tracklet.status)
+                            self.get_logger().debug(tracklet.status)
 
                     # Publish detections
-                    self.publish_detections(tracklets)
+                    self.publish_detections(self.labelMap, tracklets, "oakd_center_camera", self.objectPublisher)
 
                 if inPreviewCAM == None:
                     continue
@@ -278,40 +278,42 @@ class RobotVision(Node):
                     try:
                         edgeFrame = inEdgeFrame.getCvFrame()
                     except:
-                        print("Failed to read edge frame")
+                        self.get_logger().error("Failed to read edge frame")
                     else:
                         if show_edge_image:
                             height = edgeFrame.shape[0]
                             width = edgeFrame.shape[1]
 
                             if inBallDetectNN != None:
-                                self.publish_target_detections(inBallDetectNN.detections)
-
-                                for detection in inBallDetectNN.detections:
+                                # Display detections
+                                for tracklet in inBallDetectNN.tracklets:
                                     # Denormalize bounding box
-                                    x1 = int(detection.xmin * width)
-                                    x2 = int(detection.xmax * width)
-                                    y1 = int(detection.ymin * height)
-                                    y2 = int(detection.ymax * height)
+                                    x1 = int(tracklet.srcImgDetection.xmin*width)
+                                    x2 = int(tracklet.srcImgDetection.xmax*width)
+                                    y1 = int(tracklet.srcImgDetection.ymin*height)
+                                    y2 = int(tracklet.srcImgDetection.ymax*height)
 
-                                    conf = "{:.2f}".format(detection.confidence*100)
-                                    print(f"Conf {conf}, bb {x1},{y1} - {x2},{y2}, xyz {int(detection.spatialCoordinates.x)}, {int(detection.spatialCoordinates.y)}, {int(detection.spatialCoordinates.z)}")
+                                    conf = "{:.2f}".format(tracklet.srcImgDetection.confidence*100)
+                                    self.get_logger().debug(f"id: {tracklet.id}, Conf {conf}, bb {x1},{y1} - {x2},{y2}, xyz {int(tracklet.spatialCoordinates.x)}, {int(tracklet.spatialCoordinates.y)}, {int(tracklet.spatialCoordinates.z)}")
 
-                                    cv2.putText(edgeFrame, "{:.2f}".format(detection.confidence*100), (x1 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.25, color)
-                                    cv2.putText(edgeFrame, f"X: {int(detection.spatialCoordinates.x)}", (x1 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
-                                    cv2.putText(edgeFrame, f"Y: {int(detection.spatialCoordinates.y)}", (x1 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
-                                    cv2.putText(edgeFrame, f"Z: {int(detection.spatialCoordinates.z)}", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+                                    cv2.putText(edgeFrame, f"{int(tracklet.id)}", (x2 + 10, y1 + 0), cv2.FONT_HERSHEY_TRIPLEX, 0.50, 255)
+                                    cv2.putText(edgeFrame, "{:.2f}".format(tracklet.srcImgDetection.confidence*100), (x2 + 10, y1 + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+                                    cv2.putText(edgeFrame, f"X: {int(tracklet.spatialCoordinates.x)}", (x2 + 10, y1 + 35), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+                                    cv2.putText(edgeFrame, f"Y: {int(tracklet.spatialCoordinates.y)}", (x2 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
+                                    cv2.putText(edgeFrame, f"Z: {int(tracklet.spatialCoordinates.z)}", (x2 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
 
                                     cv2.rectangle(edgeFrame, (x1, y1), (x2, y2), (255, 255, 0), cv2.FONT_HERSHEY_SIMPLEX)
 
-                            #cv2.imshow("Edge", edgeFrame)
+                                self.publish_detections(["ball"], inBallDetectNN.tracklets, "oakd_right_camera", self.targetPublisher)
+
+                            cv2.imshow("Edge", edgeFrame)
                             if pub_detection_frame:
                                 self.detectionImagePub.publish(self.bridge.cv2_to_imgmsg(edgeFrame, "mono8"))
 
                 try:
                     frameCAM = inPreviewCAM.getCvFrame()
                 except:
-                    print("Failed to read frame")
+                    self.get_logger().error("Failed to read preview frame")
                     continue
 
                 # The Pose landmark NN input needs to be square.
@@ -353,7 +355,7 @@ class RobotVision(Node):
                                 # Calc normalized center of detected person
                                 x = ((r.rect_points[0][1] + r.rect_points[3][1])/2 + xoffset)/widthCAM
                                 diff = abs(x - tracked_x)
-                                #print("region= %d, x center= %f, tracked_x= %f" % (i, x, tracked_x))
+                                #self.get_logger().debug("region= %d, x center= %f, tracked_x= %f" % (i, x, tracked_x))
                                 if sel_region == None or closest_diff > diff:
                                     sel_region = i
                                     closest_diff = diff
@@ -488,7 +490,7 @@ class RobotVision(Node):
                             save_cnt += 1
 
                         cv2.imwrite(self.save_image.filepath, frameCAMOrig)
-                        print("Saved frame to [%s]" % self.save_image.filepath)
+                        self.get_logger().debug("Saved frame to [%s]" % self.save_image.filepath)
                         self.save_image = None
 
                 if use_imu and imuData != None:
@@ -517,7 +519,7 @@ class RobotVision(Node):
         edgeDetector.outputImage.link(xoutEdge.input)
 
         spatialDetectionNetwork = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
-        spatialDetectionNetwork.setConfidenceThreshold(0.4)
+        spatialDetectionNetwork.setConfidenceThreshold(0.40)
         spatialDetectionNetwork.setBlobPath(get_model_path('ball_detect_yolo_v4_tiny_openvino_2021.4_5shave.blob'))
         spatialDetectionNetwork.setNumInferenceThreads(2)
 
@@ -530,15 +532,28 @@ class RobotVision(Node):
         spatialDetectionNetwork.setCoordinateSize(4)
         spatialDetectionNetwork.setAnchors(np.array([10,14, 23,27, 37,58, 81,82, 135,169, 344,319]))
         spatialDetectionNetwork.setAnchorMasks({ "side32": np.array([0,1,2]), "side16": np.array([3,4,5]) })
-        spatialDetectionNetwork.setIouThreshold(0.5)
+        spatialDetectionNetwork.setIouThreshold(0.3)
         # Its inputs
         stereo.depth.link(spatialDetectionNetwork.inputDepth)
         edgeDetector.outputImage.link(spatialDetectionNetwork.input)
 
+
+        # Create object tracker
+        objectTracker = pipeline.createObjectTracker()
+        # track only person
+        # possible tracking types: ZERO_TERM_COLOR_HISTOGRAM, ZERO_TERM_IMAGELESS
+        objectTracker.setTrackerType(dai.TrackerType.SHORT_TERM_IMAGELESS)
+        # Not in depthai 2.14.1.0
+        #objectTracker.setTrackerIdAssigmentPolicy(dai.TrackerIdAssigmentPolicy.UNIQUE_ID)
+        # Its input
+        spatialDetectionNetwork.passthrough.link(objectTracker.inputTrackerFrame)
+        spatialDetectionNetwork.passthrough.link(objectTracker.inputDetectionFrame)
+        spatialDetectionNetwork.out.link(objectTracker.inputDetections)
+
         nnBallDetOut = pipeline.create(dai.node.XLinkOut)
         nnBallDetOut.setStreamName("ball_detections")
         # Its input
-        spatialDetectionNetwork.out.link(nnBallDetOut.input)
+        objectTracker.out.link(nnBallDetOut.input)
     
     def setup_imu(self, pipeline):
         imu = pipeline.create(dai.node.IMU)
@@ -690,7 +705,7 @@ class RobotVision(Node):
             colorCam.preview.link(manip_bp.inputImage)
 
             # First stage pose detector
-            print("Creating Pose Detection Neural Network...")
+            self.get_logger().debug("Creating Pose Detection Neural Network...")
             pd_nn = pipeline.createNeuralNetwork()
             pd_nn.setBlobPath(get_model_path("pose_detection.blob"))
             # Increase threads for detection
@@ -708,7 +723,7 @@ class RobotVision(Node):
             pd_nn.out.link(pd_out.input)
 
              # Define landmark model
-            print("Creating Landmark Neural Network...")
+            self.get_logger().debug("Creating Landmark Neural Network...")
             lm_nn = pipeline.createNeuralNetwork()
             lm_nn.setBlobPath(get_model_path("pose_landmark_full_body.blob"))
             lm_nn.setNumInferenceThreads(1)
@@ -726,19 +741,22 @@ class RobotVision(Node):
         if use_imu:
             self.setup_imu(pipeline)
 
-        print("Pipeline created.")
+        self.get_logger().debug("Pipeline created.")
         return pipeline
 
     # Publish detections to other ROS nodes
     # Uses a custom message.
-    def publish_detections(self, tracklets):
+    def publish_detections(self, labelMap, tracklets, camera, publisher):
         # Build a message containing the objects.  Uses
         # a custom message format
         objList = []
 
+        self.get_logger().debug("Publishing detections for camera: %s" % camera)
+
+
         for tracklet in tracklets:
             try:
-                label = self.labelMap[tracklet.label]
+                label = labelMap[tracklet.label]
             except:
                 label = tracklet.label
 
@@ -746,9 +764,8 @@ class RobotVision(Node):
             if (label == 'person' and (tracklet.srcImgDetection.xmax - tracklet.srcImgDetection.xmin) > 0.7):
                 continue
 
-            #print(detection)
             desc = ObjectDesc()
-            desc.frame = "oakd_center_camera"
+            desc.frame = camera
             desc.id = tracklet.id
             desc.track_status = str(tracklet.status).split(".")[1]
             desc.name = str(label)
@@ -767,37 +784,7 @@ class RobotVision(Node):
         # Publish the object message to our topic
         msgObjects = ObjectDescArray()
         msgObjects.objects = objList
-        self.objectPublisher.publish(msgObjects)
-
-    # Publish detections to other ROS nodes
-    # Uses a custom message.
-    def publish_target_detections(self, detections):
-        # Build a message containing the objects.  Uses
-        # a custom message format
-        objList = []
-
-        for detection in detections:
-            desc = ObjectDesc()
-            desc.frame = "oakd_right_camera"
-            desc.id = detection.label
-            desc.name = "ball"
-            desc.confidence = detection.confidence
-            # Map to ROS convention
-            desc.x = detection.spatialCoordinates.z
-            desc.y = -1*detection.spatialCoordinates.x
-            desc.z = detection.spatialCoordinates.y
-            desc.c = 0
-            desc.x_min = detection.xmin
-            desc.x_max = detection.xmax
-            desc.y_min = detection.ymin
-            desc.y_max = detection.ymax
-            objList += (desc,)
-
-        # Publish the object message to our topic
-        msgObjects = ObjectDescArray()
-        msgObjects.objects = objList
-        self.targetPublisher.publish(msgObjects)
-
+        publisher.publish(msgObjects)
 
     # Publish the interpreted pose from the Blazepose detection
     def publish_poses(self, poses):
@@ -820,14 +807,14 @@ class RobotVision(Node):
     # and should be annotated in the image.
     def tracked_callback(self, msg):
         self.tracked = msg
-        #print("tracked_callback, id= %d" % msg.id)
+        self.get_logger().debug("tracked_callback, id= %d" % msg.id)
 
     # Subscribed-to topic for triggering an image capture
     def save_image_callback(self, msg):
         self.save_image = msg
-        #print("save_image_callback, fname= %s" % msg.filepath)
+        self.get_logger().debug("save_image_callback, fname= %s" % msg.filepath)
 
-    # Publish the interpreted pose from the Blazepose detection
+    # Publish the head (camera) orientation as measured by the IMU
     def publish_head_rotation(self, q, a):
         msg = HeadImu()
         msg.rotation.x = q.i
@@ -837,7 +824,7 @@ class RobotVision(Node):
         msg.accelx = a.x
         msg.accely = a.y
         msg.accelz = a.z
-        #self.get_logger().info('accely: %f' % a.y)        
+        self.get_logger().debug('accely: %f' % a.y)        
         self.headImuPublisher.publish(msg)
 
 def main(args=None):
