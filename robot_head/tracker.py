@@ -147,6 +147,7 @@ class CameraServo:
         self.target_pos = None
         self.move_steps = 1.0
         self.last_adj_by_voice = 0.0
+        self.track_recenter_timeout = 3.0
         self.servo_pos = self.get_pos()
         ms = self.set_pos(self.servo_midpos)
         time.sleep(ms/1000.0)
@@ -269,7 +270,7 @@ class CameraServo:
                 self.auto_center_time = time.monotonic()
                 if self.is_at_servo_limit():
                     self.obj_last_dir = 0
-            elif self.auto_center_time != 0.0 and time.monotonic() - self.auto_center_time > 6.0:
+            elif self.auto_center_time != 0.0 and time.monotonic() - self.auto_center_time > self.track_recenter_timeout:
                 self.auto_center_time = 0.0
                 self.obj_last_dir = 0
                 self.set_pos(self.servo_midpos)
@@ -453,8 +454,8 @@ class CameraTracker(Node):
         vel = 0.0
         # Turn if detected object more than 20deg off center.
         if pan > 20.0:
-            vel = min(0.70, (pan - 20.0)*0.01 + 0.1)
-            self.track_base_track_vel += (vel - self.track_base_track_vel)*0.1
+            vel = min(0.80, (pan - 20.0)*0.02 + 0.4)
+            self.track_base_track_vel += (vel - self.track_base_track_vel)*0.3
             #self.get_logger().info("Base rot vel %f, pan= %f" % (vel, pan))
 
         if vel > 0.0:
