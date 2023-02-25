@@ -14,5 +14,9 @@ def generate_launch_description():
         Node(
             package='robot_head',
             executable='viewer',
+        ),
+        Node(
+            package='robot_head',
+            executable='face',
         )
     ])
