@@ -46,20 +46,20 @@ from BlazeposeDepthai import BlazeposeDepthai, to_planar
 human_pose = False
 human_pose_process = True
 
-ball_detect = True
+ball_detect = False
 
 show_depth = False
 cam_out_use_preview = True
 use_tracker = True
 print_detections = False
 show_det_info = True
-show_edge_image = True
+show_edge_image = False 
 syncNN = False
 use_tyolo_v4 = False
-use_imu = True
+use_imu = False
 pub_detection_frame = True
 
-frame_rate = 15.0
+frame_rate = 10.0
 
 labelMap_MNetSSD = [
     "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
@@ -225,12 +225,10 @@ class RobotVision(Node):
 
             while True:
 
-                rclpy.spin_once(self, timeout_sec=0.001)
+                rclpy.spin_once(self, timeout_sec=1.0/frame_rate/2.0)
 
                 try:
                     inPreviewCAM = previewQueueCAM.tryGet()
-
-#                    inPreviewCAM = previewQueueCAM.tryGet()
                     inNN = detectionNNQueue.tryGet()
 
                     if ball_detect:
@@ -256,8 +254,8 @@ class RobotVision(Node):
                             self.get_logger().debug("id: %d" % tracklet.id)
                             self.get_logger().debug("label: %s" % self.labelMap[tracklet.label])
                             roi = tracklet.roi.denormalize(640, 360)
-                            self.get_logger().debug("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
-                            self.get_logger().debug("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
+                            #self.get_logger().debug("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
+                            self.get_logger().info("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
 
                             #if tracklet.srcImgDetection.label != "NoneType":
                             #    label = labelMap[tracklet.srcImgDetection.label]
@@ -807,7 +805,7 @@ class RobotVision(Node):
     # and should be annotated in the image.
     def tracked_callback(self, msg):
         self.tracked = msg
-        self.get_logger().debug("tracked_callback, id= %d" % msg.id)
+        #self.get_logger().debug("tracked_callback, id= %d" % msg.id)
 
     # Subscribed-to topic for triggering an image capture
     def save_image_callback(self, msg):
