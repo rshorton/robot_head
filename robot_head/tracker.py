@@ -16,7 +16,6 @@
 # Also controls the emotional output features (head tilt, smile, talking indicator).
 
 import threading
-import sys
 import time
 import math
 import serial
@@ -28,31 +27,34 @@ from rclpy.node import Node
 import rclpy.time
 from rclpy.duration import Duration
 
-from std_msgs.msg import String
 from std_msgs.msg import Bool
 from std_msgs.msg import Int32
 from std_msgs.msg import Float32
 
-from robot_head_interfaces.msg import Smile, HeadTilt, HeadPose, Track, TrackStatus, ScanStatus, Antenna, HeadImu
+from robot_head_interfaces.msg import HeadTilt, HeadPose, Track, TrackStatus, ScanStatus, HeadImu
 from speech_action_interfaces.msg import Wakeword
 
 # Custom object detection messages
-from object_detection_msgs.msg import ObjectDescArray, ObjectDesc
+from object_detection_msgs.msg import ObjectDescArray
 
 # Used for publishing the camera joint positions
 from sensor_msgs.msg import JointState
 from rclpy.qos import QoSProfile
 
-from geometry_msgs.msg import PoseStamped, Twist, Quaternion
 import tf2_ros
-#from tf2_ros.transform_listener import TransformListener
-
-import time
+from geometry_msgs.msg import PoseStamped, Twist, PointStamped
+from tf2_geometry_msgs import do_transform_point
 
 min_track_confidence = 0.70
 
 SERIAL_PORT = '/dev/head_servo_driver'
 servo_ctrl = None
+
+camera_frame = "oakd_center_camera"
+
+# True to publish the position of the detected object to topic /goal_update to
+# with Nav2 dynamic follower behavior tree.
+use_tracked_pose_as_goal_update = True
 
 PI = math.pi
 
@@ -372,17 +374,18 @@ class CameraTracker(Node):
 
         self.pub_scan_status = self.create_publisher(ScanStatus, '/head/scan_status', qos_profile)
 
-        # See comment for publish_detected_pose
-        #self.pub_obj_pos = self.create_publisher(PoseStamped, '/tracked_object_map_position', qos_profile)
-        #self.tfBuffer = tf2_ros.Buffer()
-        #self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
+        if use_tracked_pose_as_goal_update:
+            self.pub_goal_update = self.create_publisher(PoseStamped, '/goal_update', qos_profile)
+
+        self.tfBuffer = tf2_ros.Buffer()
+        self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
 
         self.track_cmd_mode = "Track"
         self.track_rate = 0
         self.track_new_mode = None
         self.track_new_level = 0
         self.sound_track_mode = None
-        self.track_turn_base = True
+        self.track_turn_base = False
         self.track_object_type = 'person'
 
         self.pose_cmd = None
@@ -645,35 +648,38 @@ class CameraTracker(Node):
 
             self.broadcast_camera_joints()
 
-    # Does not work since RCLPY does not support this yet (4/2021 Rolling release)
-    # As a workaround, the 'tracked_object_mapper' node is used for this function.
-    #
-    #def publish_detected_pose(self, obj):
-    #     try:
-    #         self.tf_map_to_oakd = self.tfBuffer.lookup_transform("map", "oakd",
-    #                                                              rclpy.time.Time(),
-    #                                                              Duration(seconds=0.3))
-    #     except Exception as e:
-    #         self.get_logger().info(str(e))
-    #         return
-    #     else:
-    #         self.get_logger().info('Got transform')
-    #
-    #     now = self.get_clock().now()
-    #
-    #     msg = PoseStamped()
-    #     msg.header.stamp = now.to_msg()
-    #     msg.header.frame_id = "oakd"
-    #     msg.pose.position.x = obj.x
-    #     msg.pose.position.y = obj.y
-    #     msg.pose.position.z = obj.z
-    #     msg.pose.orientation.x = 0.0
-    #     msg.pose.orientation.y = 0.0
-    #     msg.pose.orientation.z = 0.0
-    #     msg.pose.orientation.w = 1.0
-    #
-    #     map_pose = self.tfBuffer.transform(msg, "map")
-    #     self.pub_obj_pos.publish(map_pose)
+    def publish_tracked_pose_as_goal_update(self, frame, x, y, z):
+        p = PointStamped()     
+        p.point.x = x/1000.0
+        p.point.y = y/1000.0
+        p.point.z = z/1000.0
+        self.get_logger().debug('publish_tracked_pose_as_goal_update, pre-mapped: (%f, %f, %f)' % (p.point.x, p.point.y, p.point.z))
+
+        if frame != camera_frame:
+            try:
+                transform = self.tfBuffer.lookup_transform(frame, camera_frame,
+                                                           rclpy.time.Time(),
+                                                           Duration(seconds=0.1))
+            except Exception as e:
+                self.get_logger().info(str(e))
+                return
+
+            xp = do_transform_point(p, transform)
+            p.point.x = xp.point.x
+            p.point.y = xp.point.y
+       
+        msg = PoseStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame
+        msg.pose.position.x = p.point.x
+        msg.pose.position.y = p.point.y
+        msg.pose.position.z = 0.0
+        msg.pose.orientation.x = 0.0
+        msg.pose.orientation.y = 0.0
+        msg.pose.orientation.z = 0.0
+        msg.pose.orientation.w = 1.0
+        self.pub_goal_update.publish(msg)
+        self.get_logger().debug('publish_tracked_pose_as_goal_update, pt: (%f, %f)' % (p.point.x, p.point.y))
 
     # Broadcast the pan-tilt joints so ROS TF can be used to tranform positions
     # in the camera frame to other frames such as the map frame when navigating.
@@ -714,6 +720,8 @@ class CameraTracker(Node):
         joint_state.name = ['cam_tilt_joint', 'cam_pan_joint']
         joint_state.position = [cam_tilt_rad, cam_pan_rad]
         self.pub_joint.publish(joint_state)
+        self.get_logger().debug('Head joint pos, pan: %f, tilt: %f' % (cam_pan_rad, cam_pan_rad))
+
 
     # Move the head in a side-to-side scanning motion
     def init_scan(self, initial_scan_left, limit_num_scans, cnt_scans_left, cnt_scans_right):
@@ -762,6 +770,10 @@ class CameraTracker(Node):
         # Duration tracked/not tracked
         msg.duration = time.monotonic() - self.detected_time
         self.pub_tracked.publish(msg)
+
+        if detection != None and use_tracked_pose_as_goal_update:
+            self.publish_tracked_pose_as_goal_update("map", x_ave, y_ave, z_ave)
+
 
     def publish_scan_status(self):
         scan_status = ScanStatus()
@@ -855,7 +867,7 @@ class CameraTracker(Node):
         self.sound_wakeword_aoa = msg.angle
 
     def obj_detection_callback(self, msg):
-        #self.get_logger().info('Received object detection msg')
+        self.get_logger().debug('Received object detection msg')
         self.detections = msg.objects
         self.detections_time = time.monotonic()
 
