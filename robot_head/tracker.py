@@ -772,7 +772,7 @@ class CameraTracker(Node):
         self.pub_tracked.publish(msg)
 
         if detection != None and use_tracked_pose_as_goal_update:
-            self.publish_tracked_pose_as_goal_update("map", x_ave, y_ave, z_ave)
+            self.publish_tracked_pose_as_goal_update(camera_frame, x_ave, y_ave, z_ave)
 
 
     def publish_scan_status(self):
