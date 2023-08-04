@@ -54,7 +54,7 @@ camera_frame = "oakd_center_camera"
 
 # True to publish the position of the detected object to topic /goal_update to
 # with Nav2 dynamic follower behavior tree.
-use_tracked_pose_as_goal_update = True
+use_tracked_pose_as_goal_update = False
 
 PI = math.pi
 
@@ -549,7 +549,8 @@ class CameraTracker(Node):
                     self.stop_base_pose_tracking()
 
                     if self.track_new_mode == "LookDown":
-                        self.servo_tilt.set_pos(self.servo_tilt.servo_minpos)
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_maxpos)
+                        self.servo_pan.set_pos(self.servo_pan.servo_midpos)
 
                     elif self.track_new_mode == "Scan":
                         self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
@@ -557,6 +558,10 @@ class CameraTracker(Node):
 
                     elif self.track_new_mode == "Track":
                         self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
+
+                    elif self.track_new_mode == "Off":
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
+                        self.servo_pan.set_pos(self.servo_pan.servo_midpos)
 
                     self.track_cmd_mode = self.track_new_mode
                     self.publish_scan_status()
