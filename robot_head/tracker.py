@@ -185,7 +185,7 @@ class CameraServo:
             ms = self.calc_move_duration(pos)
             servo_ctrl.move(self.chan, pos, ms)
             #self.logger.info("set servo pos: %s, %d -> %d, %d ms" % (self.joint, self.servo_pos, pos, ms))
-            self.servo_pos = int(pos_in)
+            self.servo_pos = int(pos)
         return ms
 
     def set_servo_relative_pos(self, pos_pct):
@@ -362,7 +362,7 @@ class CameraTracker(Node):
             2)
 
         # Topic for publishing which object is chosen for tracking
-        self.pub_tracked = self.create_publisher(TrackStatus, '/head/tracked', 1)
+        self.pub_tracked = self.create_publisher(TrackStatus, '/head/tracked', QoSProfile(depth=1))
 
         # Topic for controlling robot base for turning the robot in the direction
         # of a detected person
@@ -377,16 +377,20 @@ class CameraTracker(Node):
         if use_tracked_pose_as_goal_update:
             self.pub_goal_update = self.create_publisher(PoseStamped, '/goal_update', qos_profile)
 
+        self.pub_tracked_pose = self.create_publisher(PoseStamped, '/head/tracked_pose', qos_profile)
+
         self.tfBuffer = tf2_ros.Buffer()
         self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
 
-        self.track_cmd_mode = "Track"
-        self.track_rate = 0
-        self.track_new_mode = None
-        self.track_new_level = 0
-        self.sound_track_mode = None
-        self.track_turn_base = False
-        self.track_object_type = 'person'
+        self.track_cmd_mode = "Track"           # Current track mode
+        self.track_new_mode = None              # New mode received from the topic
+        self.track_sound_mode = "none"          # Type of sound to trigger a scan
+        self.track_scanning_to_sound = False    # True if scanning in the direction of detected sound
+        self.track_turn_base = False            # True if base should be turned to face tracked object
+        self.track_object_type = 'person'       # Type of object to track
+        self.track_scan_delay_sec = 1.0         # Number seconds to wait before scanning after losing a track
+        self.track_last_update = 0.0            # Time of last track update
+        self.track_last_sound_scan = 0.0        # Time of last sound scan
 
         self.pose_cmd = None
         self.pan_manual_cmd = None
@@ -395,9 +399,8 @@ class CameraTracker(Node):
 
         self.last_tracked_object = None
         self.last_tracked_ave_pos = None
-        self.last_detected_time = None
-        self.detected_time = time.monotonic()
-        self.last_voice_track = 0
+        self.last_tracked_time = 0.0
+        self.last_tracked_start_time = time.monotonic()
 
         self.track_base_track_vel = 0.0
         self.track_base_track_pan_ave = None
@@ -431,7 +434,7 @@ class CameraTracker(Node):
         self.sound_wakeword_aoa = None
 
         self.detections = None
-        self.detections_time = None
+        self.detections_time = 0.0
 
         self.cur_pose = None
         self.cur_pose_valid = False;
@@ -491,7 +494,7 @@ class CameraTracker(Node):
                     if det.track_status == "TRACKED":
                         # Currently tracked object is still detected
                         tracked_object = self.last_tracked_object = det
-                        self.last_detected_time = time.monotonic()
+                        self.last_tracked_time = time.monotonic()
                         self.last_tracked_ave_pos[0] = self.last_tracked_ave_pos[0]*0.7 + det.x*0.3
                         self.last_tracked_ave_pos[1] = self.last_tracked_ave_pos[1]*0.7 + det.y*0.3
                         self.last_tracked_ave_pos[2] = self.last_tracked_ave_pos[2]*0.7 + det.z*0.3
@@ -508,17 +511,17 @@ class CameraTracker(Node):
 
         # Delay a bit before switching away to different person
         if self.last_tracked_object == None or \
-            (time.monotonic() - self.last_detected_time > 1.0):
+            (time.monotonic() - self.last_tracked_time > 1.0):
 
             # Reset the start time of tracking/not tracking if
             # transitioning from not tracking to tracking or
             # vice versa (but not on each timeout while not
             # tracking)
             if self.last_tracked_object != None:
-                self.detected_time = time.monotonic()
+                self.last_tracked_start_time = time.monotonic()
 
             self.last_tracked_object = tracked_object
-            self.last_detected_time = time.monotonic()
+            self.last_tracked_time = time.monotonic()
             publish = True
             #print("Now tracking: %s" % ("none" if tracked_object == None else tracked_object.id))
 
@@ -532,18 +535,27 @@ class CameraTracker(Node):
 
     def tracker_thread(self):
         rot_cnt = 0
-        track_cnt = 0
         while True:
             time.sleep(0.05)
+
+            update_base_pose = False
 
             rot_cnt += 1
             if rot_cnt >= 2:
                 rot_cnt = 0
                 self.update_head_rotation()
 
+            # Tracking modes:
+            #   Scan - Continuously pan side-to-side
+            #   TrackScan - Track, but scan if nothing tracked
+            #   Track - Track if a person becomes in view, optionally turn to sound
+            #   Manual - Only manual commands control head position
+            #   LookDown - Center and look down
+            #   Off - Disable tracking and go to home position
+
             if self.track_new_mode != None:
                 if self.track_new_mode != self.track_cmd_mode:
-                    self.scan_active = False
+                    self.cancel_scan()
                     self.servo_pan.stop_tracking()
                     self.servo_tilt.stop_tracking()
                     self.stop_base_pose_tracking()
@@ -557,6 +569,14 @@ class CameraTracker(Node):
                         self.init_scan(True, False, 0, 0)
 
                     elif self.track_new_mode == "Track":
+                        self.sound_aoa = None
+                        self.sound_wakeword = None
+                        self.track_scanning_to_sound = False
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
+                        self.servo_pan.set_pos(self.servo_pan.servo_midpos)
+
+                    elif self.track_new_mode == "TrackScan":
+                        self.track_last_update = 0.0
                         self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
 
                     elif self.track_new_mode == "Off":
@@ -564,27 +584,13 @@ class CameraTracker(Node):
                         self.servo_pan.set_pos(self.servo_pan.servo_midpos)
 
                     self.track_cmd_mode = self.track_new_mode
-                    self.publish_scan_status()
-
+                    
                 self.track_new_mode = None
 
             # Process the current detections to determine who to track
             tracked_object = self.update_tracking(self.detections)
 
-            if self.track_cmd_mode == "Scan":
-                self.update_scan()
-                self.publish_scan_status()
-
-            elif self.track_cmd_mode == "TrackScan":
-                if tracked_object == None:
-                    self.update_scan()
-                    # Go back to track mode if scan completed without seeing a person
-                    if self.scan_active == False:
-                        self.track_cmd_mode = "Track"
-                else:
-                    self.track_cmd_mode = "Track"
-
-            elif self.track_cmd_mode == "Manual":
+            if self.track_cmd_mode == "Manual":
                 if self.pose_cmd != None:
                     self.servo_pan.set_pos(self.servo_pan.get_servo_pos_from_degrees(self.pose_cmd.yaw))
                     self.servo_tilt.set_pos(self.servo_tilt.get_servo_pos_from_degrees(self.pose_cmd.pitch))
@@ -596,25 +602,30 @@ class CameraTracker(Node):
                 if self.pan_manual_cmd != None:
                     self.servo_pan.set_servo_relative_pos(self.pan_manual_cmd)
                     self.pan_manual_cmd = None
+
                 if self.tilt_manual_cmd != None:
                     self.servo_tilt.set_servo_relative_pos(self.tilt_manual_cmd)
                     self.tilt_manual_cmd = None
+
                 if self.rotate_manual_cmd != None:
                     self.servo_rotate.set_servo_relative_pos(self.rotate_manual_cmd)
                     self.rotate_manual_cmd = None
 
-            if self.track_cmd_mode == "Track":
-                track_cnt += 1
-                if track_cnt >= 1:
-                    track_cnt = 0
+            elif self.track_cmd_mode == "Scan":
+                self.update_scan()
 
-                    #self.get_logger().info('tracked_object %d, voice_detect %d, sound_aoa= %s' % (tracked_object != None, self.sound_track_mode, str(self.sound_aoa)));
+            elif self.track_cmd_mode == "Track":
+                if tracked_object == None:
+                    if self.track_scanning_to_sound:
+                        self.update_scan()
+                        self.track_last_sound_scan = time.monotonic()
+                        if not self.is_scan_active():
+                            self.track_scanning_to_sound = False
 
-                    # If no object detect is detected but sound was detected, then
-                    # scan in the direction of the sound.
-                    if tracked_object == None and \
-                        ((self.sound_track_mode == "any" and self.sound_aoa != None and time.monotonic() - self.last_voice_track > 5.0) or \
-                         (self.sound_track_mode == "wakeword" and self.sound_wakeword != None)):
+                    elif ((self.track_sound_mode == "any" and self.sound_aoa != None and time.monotonic() - self.track_last_sound_scan > 4.0) or \
+                        (self.track_sound_mode == "wakeword" and self.sound_wakeword != None)):
+
+                        #self.get_logger().info('tracked_object %d, voice_detect %d, sound_aoa= %s' % (tracked_object != None, self.track_sound_mode, str(self.sound_aoa)));
 
                         aoa = self.sound_wakeword_aoa if self.sound_wakeword != None else self.sound_aoa
 
@@ -629,36 +640,58 @@ class CameraTracker(Node):
                         left_cnt = 1 if scan_left else 0
                         right_cnt = 0 if scan_left else 1
                         self.init_scan(scan_left, True, left_cnt, right_cnt)
-                        self.track_cmd_mode = "TrackScan"
-
+                        self.track_scanning_to_sound = True
+                        self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
                     else:
+                        # Update so servos auto center after tracking timeout
                         self.servo_pan.update(tracked_object)
                         self.servo_tilt.update(tracked_object)
 
-                    self.sound_aoa = None
-                    self.sound_wakeword = None
-                    self.broadcast_camera_joints()
-
-                if self.track_turn_base:
-                    self.update_base_pose_tracking()
                 else:
-                    self.stop_base_pose_tracking()
+                    self.track_scanning_to_sound = False
+                    self.servo_pan.update(tracked_object)
+                    self.servo_tilt.update(tracked_object)
+                    update_base_pose = True
+
+                self.sound_aoa = None
+                self.sound_wakeword = None
+
+            elif self.track_cmd_mode == "TrackScan":
+                if tracked_object == None:
+                    # If nothing being tracked, then scan until something is tracked
+                    if time.monotonic() - self.track_last_update > self.track_scan_delay_sec:
+                        if not self.is_scan_active():
+                            self.init_scan(True, False, 0, 0)
+                            self.servo_tilt.set_pos(self.servo_tilt.servo_midpos)
+                        self.update_scan()
+                    else:
+                        self.cancel_scan()                        
+
+                else:
+                    self.cancel_scan()
+                    self.servo_pan.update(tracked_object)
+                    self.servo_tilt.update(tracked_object)
+                    self.track_last_update = time.monotonic()
+                    update_base_pose = True
+
+            if self.track_turn_base:
+                # Turn the base toward the tracked object if enabled
+                if update_base_pose:
+                    self.update_base_pose_tracking()
+            else:
+                self.stop_base_pose_tracking()
 
             if self.detections != None and time.monotonic() - self.detections_time > 1.0:
                 self.detections = None
-
-            if tracked_object == None:
-                self.stop_base_pose_tracking()
-                self.last_detected_time == None
-
+        
             self.broadcast_camera_joints()
 
-    def publish_tracked_pose_as_goal_update(self, frame, x, y, z):
+    def position_to_point_stamped_msg(self, frame, x, y, z):
         p = PointStamped()     
         p.point.x = x/1000.0
         p.point.y = y/1000.0
-        p.point.z = z/1000.0
-        self.get_logger().debug('publish_tracked_pose_as_goal_update, pre-mapped: (%f, %f, %f)' % (p.point.x, p.point.y, p.point.z))
+        p.point.z = z/1000.
+        self.get_logger().debug('position_to_point_stamped_msg, pre-mapped: (%f, %f, %f)' % (p.point.x, p.point.y, p.point.z))
 
         if frame != camera_frame:
             try:
@@ -683,15 +716,25 @@ class CameraTracker(Node):
         msg.pose.orientation.y = 0.0
         msg.pose.orientation.z = 0.0
         msg.pose.orientation.w = 1.0
+        return msg
+
+    def publish_tracked_pose_as_goal_update(self, msg):
         self.pub_goal_update.publish(msg)
-        self.get_logger().debug('publish_tracked_pose_as_goal_update, pt: (%f, %f)' % (p.point.x, p.point.y))
+        self.get_logger().debug('publish_tracked_pose_as_goal_update, pt: (%f, %f)' % (msg.pose.position.x, msg.pose.position.y))
+
+    # For rviz visualization
+    def publish_tracked_as_pose(self, msg):
+        self.pub_tracked_pose.publish(msg)
 
     # Broadcast the pan-tilt joints so ROS TF can be used to tranform positions
     # in the camera frame to other frames such as the map frame when navigating.
     # My URDF file names the camera joints as: 'cam_tilt_joint', 'cam_pan_joint
     def broadcast_camera_joints(self):
-        cam_pan_rad = self.servo_pan.get_servo_degrees()/180.0*PI
-        cam_tilt_rad = -1.0*self.servo_tilt.get_servo_degrees()/180.0*PI
+        cam_pan_deg = self.servo_pan.get_servo_degrees()
+        cam_pan_rad = cam_pan_deg/180.0*PI
+
+        cam_tilt_deg = -1.0*self.servo_tilt.get_servo_degrees()
+        cam_tilt_rad = cam_tilt_deg/180.0*PI
 
         #print("Joint states, pan,tilt: %f  %f" % (cam_pan_rad, cam_tilt_rad))
 
@@ -725,8 +768,7 @@ class CameraTracker(Node):
         joint_state.name = ['cam_tilt_joint', 'cam_pan_joint']
         joint_state.position = [cam_tilt_rad, cam_pan_rad]
         self.pub_joint.publish(joint_state)
-        self.get_logger().debug('Head joint pos, pan: %f, tilt: %f' % (cam_pan_rad, cam_pan_rad))
-
+        self.get_logger().debug('Head joint pos, pan: %f (%f), tilt: %f (%f)' % (cam_pan_rad, cam_pan_deg, cam_tilt_rad, cam_tilt_deg))
 
     # Move the head in a side-to-side scanning motion
     def init_scan(self, initial_scan_left, limit_num_scans, cnt_scans_left, cnt_scans_right):
@@ -735,6 +777,13 @@ class CameraTracker(Node):
         self.scan_stop_left_cnt = self.scan_at_left_count + cnt_scans_left
         self.scan_stop_right_cnt = self.scan_at_right_count + cnt_scans_right
         self.scan_active = True
+
+    def cancel_scan(self):
+        self.scan_active = False;
+        self.publish_scan_status()
+    
+    def is_scan_active(self):
+        return self.scan_active
 
     def update_scan(self):
         #self.get_logger().info('update_scan: scan_left %d, scan_at_left_count %d, scan_at_right_count %d, scan_stop_left_cnt %d, scan_stop_right_cnt %d, scan_limit_scans %d, scan_step %d' % \
@@ -758,27 +807,31 @@ class CameraTracker(Node):
             self.scan_stop_right_cnt <= self.scan_at_right_count:
             # Done scanning, go back to center
             self.servo_pan.auto_center()
-            self.last_voice_track = time.monotonic()
             self.scan_active = False
+        self.publish_scan_status()
 
     def publish_tracked(self, detection, x_ave, y_ave, z_ave):
         msg = TrackStatus()
-        msg.frame = "oakd"
+        msg.frame = camera_frame
         if detection != None:
             msg.object = detection
-            msg.x_ave = x_ave
-            msg.y_ave = y_ave
-            msg.z_ave = z_ave
+            msg.x_ave = x_ave/1000.0
+            msg.y_ave = y_ave/1000.0
+            msg.z_ave = z_ave/1000.0
             msg.tracking = True
         else:
             msg.tracking = False
         # Duration tracked/not tracked
-        msg.duration = time.monotonic() - self.detected_time
+        msg.duration = time.monotonic() - self.last_tracked_start_time
+        self.get_logger().debug('publish_tracked, pt: (%f, %f)' % (msg.x_ave, msg.y_ave))
         self.pub_tracked.publish(msg)
 
-        if detection != None and use_tracked_pose_as_goal_update:
-            self.publish_tracked_pose_as_goal_update(camera_frame, x_ave, y_ave, z_ave)
+        if detection != None:
+            msg = self.position_to_point_stamped_msg(camera_frame, x_ave, y_ave, z_ave)
+            self.publish_tracked_as_pose(msg)
 
+            if use_tracked_pose_as_goal_update:
+                self.publish_tracked_pose_as_goal_update(msg)
 
     def publish_scan_status(self):
         scan_status = ScanStatus()
@@ -833,9 +886,9 @@ class CameraTracker(Node):
                 self.head_rot_steps *= self.head_rot_dir
 
     def track_callback(self, msg):
-        self.get_logger().info('Received track msg: mode: %s, rate: %s, sound_track_mode: %s, turn_base: %d' % (msg.mode, msg.rate, msg.sound_track_mode, msg.turn_base))
+        self.get_logger().info('Received track msg: mode: %s, rate: %s, track_sound_mode: %s, turn_base: %d' % (msg.mode, msg.rate, msg.track_sound_mode, msg.turn_base))
         self.track_new_mode = msg.mode
-        self.sound_track_mode = msg.sound_track_mode
+        self.track_sound_mode = msg.sound_track_mode
         self.track_turn_base = msg.turn_base
         self.scan_step = int(msg.rate)
         self.track_object_type = msg.object_type
