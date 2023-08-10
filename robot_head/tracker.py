@@ -495,6 +495,7 @@ class CameraTracker(Node):
                         # Currently tracked object is still detected
                         tracked_object = self.last_tracked_object = det
                         self.last_tracked_time = time.monotonic()
+
                         self.last_tracked_ave_pos[0] = self.last_tracked_ave_pos[0]*0.7 + det.x*0.3
                         self.last_tracked_ave_pos[1] = self.last_tracked_ave_pos[1]*0.7 + det.y*0.3
                         self.last_tracked_ave_pos[2] = self.last_tracked_ave_pos[2]*0.7 + det.z*0.3
@@ -508,6 +509,7 @@ class CameraTracker(Node):
                 if tracked_object == None or tracked_object.x > det.x:
                     tracked_object = det
                     self.last_tracked_ave_pos = [det.x, det.y, det.z]
+                    self.last_tracked_start_time = time.monotonic()
 
         # Delay a bit before switching away to different person
         if self.last_tracked_object == None or \
@@ -886,7 +888,7 @@ class CameraTracker(Node):
                 self.head_rot_steps *= self.head_rot_dir
 
     def track_callback(self, msg):
-        self.get_logger().info('Received track msg: mode: %s, rate: %s, track_sound_mode: %s, turn_base: %d' % (msg.mode, msg.rate, msg.track_sound_mode, msg.turn_base))
+        self.get_logger().info('Received track msg: mode: %s, rate: %s, track_sound_mode: %s, turn_base: %d' % (msg.mode, msg.rate, msg.sound_track_mode, msg.turn_base))
         self.track_new_mode = msg.mode
         self.track_sound_mode = msg.sound_track_mode
         self.track_turn_base = msg.turn_base
