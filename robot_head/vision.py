@@ -426,12 +426,13 @@ class RobotVision(Node):
                     if flipCAM:
                         frameCAM = cv2.flip(frameCAM, 1)
 
-                    if last_poses != None:
-                        lp = last_poses['left']
-                        rp = last_poses['right']
-                    else:
-                        lp = rp = "none"
-                    OverlayTextOnBox(frameCAM, 0, 0, 10, 10, [f"PoseL: {lp}", f"PoseR: {rp}"], (0, 0, 0), 0.4, font, 0.6, white, 1)
+                    if human_pose and human_pose_process:
+                        if last_poses != None:
+                            lp = last_poses['left']
+                            rp = last_poses['right']
+                        else:
+                            lp = rp = "none"
+                        OverlayTextOnBox(frameCAM, 0, 0, 10, 10, [f"PoseL: {lp}", f"PoseR: {rp}"], (0, 0, 0), 0.4, font, 0.6, white, 1)
 
                     # Display detections
                     for tracklet in tracklets:
