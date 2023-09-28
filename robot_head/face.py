@@ -30,7 +30,7 @@ from std_msgs.msg import Bool
 from std_msgs.msg import Int32
 from std_msgs.msg import Float32
 
-from robot_head_interfaces.msg import Smile, Antenna
+from robot_head_interfaces.msg import Smile, Antenna, PointerLight
 
 # Servo control - uses Adafruit ServoKit to drive
 # ADAFRUIT PCA9685 16-channel servo driver
@@ -66,6 +66,9 @@ talk_patterns =  [[0, 1, 0, 1, 0, 0, 1, 0, 0],
 antenna_left_ch = 10
 antenna_right_ch = 11
 
+pointer_white_ch = 12
+pointer_laser_ch = 13
+
 servo_inited = False
 servo_kit = None
 pca = None
@@ -92,6 +95,14 @@ class FacialExpression(Node):
             Smile,
             '/head/smile',
             self.smile_callback,
+            2)
+
+        # Topic for receiving commands for controlling the
+        # two pointer lights (white light and laser pointer)
+        self.sub_pointer_light = self.create_subscription(
+            PointerLight,
+            '/head/pointer_light',
+            self.pointer_callback,
             2)
 
         # Topic for receiving message indicating when speech output is active.
@@ -126,6 +137,8 @@ class FacialExpression(Node):
         self.smile_level = self.smile_level_def
         self.smile_leds = smile_patterns[self.smile_level]
 
+        self.set_pointer(0, 0)
+
         self.smile_duration = 0
         self.smile_delta = 0
         self.smile_target_level = 0
@@ -145,6 +158,16 @@ class FacialExpression(Node):
 
     def smile_timer_callback(self):
         self.update_smile()
+
+    def set_pointer(self, white_level, laser_level):
+        white_level = max(min(10, int(white_level)), 0)
+        laser_level = max(min(10, int(laser_level)), 0)
+        pca.channels[pointer_white_ch].duty_cycle = int(65535*(10 - white_level)/10)
+        pca.channels[pointer_laser_ch].duty_cycle = int(65535*(10 - laser_level)/10)
+
+    def pointer_callback(self, msg):
+        self.get_logger().info('Received pointer msg: white_level: %d, laser_level: %d' % (msg.white_level, msg.laser_level))
+        self.set_pointer(msg.white_level, msg.laser_level)
 
     def smile_callback(self, msg):
         self.get_logger().info('Received smile msg: mode: %s, level: %d, duration: %d, def: %s' % (msg.mode, msg.level, msg.duration_ms, msg.use_as_default))
