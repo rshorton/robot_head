@@ -59,6 +59,8 @@ use_tyolo_v4 = False
 use_imu = False
 pub_detection_frame = True
 
+objects_to_track = ["person", "cat"]
+
 frame_rate = 10.0
 
 labelMap_MNetSSD = [
@@ -346,7 +348,7 @@ class RobotVision(Node):
                         # the detected person reported by the Tracker node
                         sel_region = None
                         if self.tracked != None and self.tracked.tracking:
-                            tracked_x = (self.tracked.object.x_min + self.tracked.object.x_max)/2
+                            tracked_x = (self.tracked.object.bb_x_min + self.tracked.object.bb_x_max)/2
                             closest_diff = 0.0
 
                             for i,r in enumerate(regions):
@@ -384,7 +386,7 @@ class RobotVision(Node):
                         blaze_pose.check_filter_reset()
                         if blaze_pose.nb_active_regions == 0:
                             last_region = None
-                            last_pose = None
+                            last_poses = None
                     else:
                         last_poses = None
 
@@ -440,7 +442,7 @@ class RobotVision(Node):
                             label = self.labelMap[tracklet.label]
                         except:
                             label = tracklet.label
-                        if label != 'person' or tracklet.status != dai.Tracklet.TrackingStatus.TRACKED:
+                        if label not in objects_to_track or tracklet.status != dai.Tracklet.TrackingStatus.TRACKED:
                             continue
 
                         # Denormalize bounding box
@@ -536,7 +538,6 @@ class RobotVision(Node):
         stereo.depth.link(spatialDetectionNetwork.inputDepth)
         edgeDetector.outputImage.link(spatialDetectionNetwork.input)
 
-
         # Create object tracker
         objectTracker = pipeline.createObjectTracker()
         # track only person
@@ -584,6 +585,8 @@ class RobotVision(Node):
         # Stereo Depth
         stereo = pipeline.createStereoDepth()
         stereo.setConfidenceThreshold(255)
+        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+
         #stereo.setMedianFilter(dai.StereoDepthProperties.MedianFilter.KERNEL_7x7)
         # Its inputs
         monoLeft.out.link(stereo.left)
@@ -622,15 +625,13 @@ class RobotVision(Node):
             spatialDetectionNetwork.setAnchorMasks({ "side26": np.array([1,2,3]), "side13": np.array([3,4,5]) })
             spatialDetectionNetwork.setIouThreshold(0.5)
             self.labelMap = labelMap_TYolo4
-            # person
-            track_types = [0]
         else:
             spatialDetectionNetwork = pipeline.createMobileNetSpatialDetectionNetwork()
 #            spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.2_6shave.blob'))
             spatialDetectionNetwork.setBlobPath(get_model_path('mobilenet-ssd_openvino_2021.4_5shave.blob'))
             self.labelMap = labelMap_MNetSSD
-            # person
-            track_types = [15]
+
+        track_types = [self.labelMap.index(object) for object in objects_to_track]
 
         spatialDetectionNetwork.setNumInferenceThreads(1)
         spatialDetectionNetwork.setConfidenceThreshold(0.3)
@@ -764,20 +765,20 @@ class RobotVision(Node):
                 continue
 
             desc = ObjectDesc()
-            desc.frame = camera
             desc.id = tracklet.id
             desc.track_status = str(tracklet.status).split(".")[1]
             desc.name = str(label)
             desc.confidence = tracklet.srcImgDetection.confidence
+            desc.position.header.frame_id = camera
+            desc.position.header.stamp = self.get_clock().now().to_msg()
             # Map to ROS convention
-            desc.x = tracklet.spatialCoordinates.z
-            desc.y = -1*tracklet.spatialCoordinates.x
-            desc.z = tracklet.spatialCoordinates.y
-            desc.c = 0
-            desc.x_min = tracklet.srcImgDetection.xmin
-            desc.x_max = tracklet.srcImgDetection.xmax
-            desc.y_min = tracklet.srcImgDetection.ymin
-            desc.y_max = tracklet.srcImgDetection.ymax
+            desc.position.point.x = tracklet.spatialCoordinates.z/1000.0
+            desc.position.point.y = -1*tracklet.spatialCoordinates.x/1000.0
+            desc.position.point.z = tracklet.spatialCoordinates.y/1000.0
+            desc.bb_x_min = tracklet.srcImgDetection.xmin
+            desc.bb_x_max = tracklet.srcImgDetection.xmax
+            desc.bb_y_min = tracklet.srcImgDetection.ymin
+            desc.bb_y_max = tracklet.srcImgDetection.ymax
             objList += (desc,)
 
         # Publish the object message to our topic
