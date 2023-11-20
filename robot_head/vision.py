@@ -18,8 +18,6 @@
 # From https://github.com/geaxgx/depthai_blazepose
 # Credit:  geaxgx
 
-import threading
-import sys
 import time
 import pathlib
 
@@ -31,7 +29,7 @@ import depthai as dai
 import rclpy
 from rclpy.node import Node
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
@@ -41,6 +39,7 @@ from pose_interp import analyze_pose
 
 import mediapipe_utils as mpu
 from BlazeposeDepthai import BlazeposeDepthai, to_planar
+from hailo_zmq_meta_sink import hailo_zmq_meta_sink
 
 # Fix - not working since updating to latest Depthai - 
 human_pose = False
@@ -58,6 +57,9 @@ syncNN = False
 use_tyolo_v4 = False
 use_imu = False
 pub_detection_frame = True
+
+hailo_ai_pipeline = False
+pub_compressed_image = False
 
 objects_to_track = ["person", "cat"]
 
@@ -113,6 +115,12 @@ def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_sc
         return x, y, x + w, y + h
     except:
         return None
+    
+def get_key_from_value(d, val):
+    keys = [k for k, v in d.items() if v == val]
+    if keys:
+        return keys[0]
+    return None
 
 class RobotVision(Node):
     def __init__(self):
@@ -120,10 +128,13 @@ class RobotVision(Node):
 
         self.image = None
         # Publisher for camera color image
-        self.imagePub = self.create_publisher(Image, '/color/image', 10)
+        if pub_compressed_image:
+            self.imagePub = self.create_publisher(CompressedImage, '/color/image/compressed', 10)
+        else:            
+            self.imagePub = self.create_publisher(Image, '/color/image', 10)
+
         self.bridge = CvBridge()
 
-        # Publisher for camera color image
         self.detectionImagePub = self.create_publisher(Image, '/detection_image', 10)
 
         # Publisher for list of detected objects
@@ -177,7 +188,14 @@ class RobotVision(Node):
         self.tracked = None
         self.save_image = None
 
-        pose_last = None
+        if hailo_ai_pipeline:
+            self.hailo_meta_sink = hailo_zmq_meta_sink(port = 5558)
+            self.hailo_meta_sink.open()
+
+            # Publisher for camera color image sent to Hailo AI
+            # pipeline without annotations.
+            self.imagePubToHailo = self.create_publisher(Image, '/color/image_to_hailo', 10)
+
 
         blaze_pose = BlazeposeDepthai(multi_detection = True)
 
@@ -225,9 +243,22 @@ class RobotVision(Node):
 
             save_cnt = 0
 
+            hailo_meta = []
+            hailo_frame_cnt = 0
+            self.tracklet_to_faceid = {}
+
             while True:
 
                 rclpy.spin_once(self, timeout_sec=1.0/frame_rate/2.0)
+
+                # Read meta data from the Hailo AI pipeline
+                if hailo_ai_pipeline:
+                    meta = self.hailo_meta_sink.read(self.get_logger())
+                    if len(meta) > 0:
+                        hailo_meta = meta
+                        hailo_frame_cnt = 0
+                    elif hailo_frame_cnt > 5:
+                        hailo_meta = []
 
                 try:
                     inPreviewCAM = previewQueueCAM.tryGet()
@@ -248,6 +279,11 @@ class RobotVision(Node):
 
                 if inNN != None:
                     tracklets = inNN.tracklets
+
+                    # Map the Hailo meta data (currently facial recog)
+                    # to the tracklets
+                    if hailo_ai_pipeline and self.hailo_meta_sink and len(hailo_meta) > 0:
+                        self.map_hailo_meta_to_tracklets(tracklets, hailo_meta)
 
                     # For debug
                     if print_detections:
@@ -304,7 +340,7 @@ class RobotVision(Node):
 
                                     cv2.rectangle(edgeFrame, (x1, y1), (x2, y2), (255, 255, 0), cv2.FONT_HERSHEY_SIMPLEX)
 
-                                self.publish_detections(["ball"], inBallDetectNN.tracklets, "oakd_right_camera", self.targetPublisher)
+                                self.publish_detections(["ball"], inBallDetectNN.tracklets, [], "oakd_right_camera", self.targetPublisher)
 
                             cv2.imshow("Edge", edgeFrame)
                             if pub_detection_frame:
@@ -315,6 +351,14 @@ class RobotVision(Node):
                 except:
                     self.get_logger().error("Failed to read preview frame")
                     continue
+
+                # Pass image to Hailo pipeline without annotations in RGB format
+                if hailo_ai_pipeline:
+                    frameHailo = frameCAM.copy()
+                    hailo_rgb = cv2.cvtColor(frameHailo, cv2.COLOR_BGR2RGB)
+                    self.imagePubToHailo.publish(self.bridge.cv2_to_imgmsg(hailo_rgb, "rgb8"))
+                    hailo_frame_cnt += 1
+
 
                 # The Pose landmark NN input needs to be square.
                 # Determine the xoffset on the left and right side of the image around
@@ -470,6 +514,30 @@ class RobotVision(Node):
 
                         cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
 
+                    # Draw annotations for Hailo meta data    
+                    if len(hailo_meta) > 0:
+                        for det in hailo_meta:
+                            if det['type'] != 'face_recog':
+                                continue
+                            #print('det: %s' % det)
+                            label = det['label']
+                            # Denormalize bounding box
+                            x1 = int(det['bb']['xmin']*widthCAM)
+                            x2 = int((det['bb']['xmin'] + det['bb']['width'])*widthCAM)
+                            y1 = int(det['bb']['ymin']*heightCAM)
+                            y2 = int((det['bb']['ymin'] + det['bb']['height'])*heightCAM)
+
+                            if flipCAM:
+                                swap = x2
+                                x2 = max(0, widthCAM - x1)
+                                x1 = max(0, widthCAM - swap)
+
+                            y1 = max(0, y1)
+                            y2 = max(0, y2)
+
+                            OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [label], (0, 0, 0), 0.4, font, font_scale, white, 1)
+                            cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
+
                     OverlayTextOnBox(frameCAM, 0, frameCAM.shape[0] - 25, 5, 5, ["fps: {:.2f}".format(fps)], (0, 0, 0), 0.4, font, font_scale, white, 1)
 
                     # Normally image is shown by Viewer node when showing
@@ -482,7 +550,12 @@ class RobotVision(Node):
 
                     # Publish image to other nodes
                     if pub_frame:
-                        self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameCAM, "bgr8"))
+                        if pub_compressed_image:
+                            self.imagePub.publish(self.bridge.cv2_to_compressed_imgmsg(frameCAM, dst_format='jpg'))
+                        else:                            
+                            self.imagePub.publish(self.bridge.cv2_to_imgmsg(frameCAM, "bgr8"))
+                        #im_rgb = cv2.cvtColor(frameCAM, cv2.COLOR_BGR2RGB)
+                        #self.imagePub.publish(self.bridge.cv2_to_imgmsg(im_rgb, "rgb8"))
 
                     # Frame capture to file when commanded from another node
                     if self.save_image != None:
@@ -594,7 +667,8 @@ class RobotVision(Node):
 
         # Color camera
         colorCam = pipeline.createColorCamera()
-        colorCam.setPreviewSize(640, 360)
+        #colorCam.setPreviewSize(640, 360)
+        colorCam.setPreviewSize(1280, 720)
 
         colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
         colorCam.setInterleaved(False)
@@ -604,7 +678,7 @@ class RobotVision(Node):
 
         # Scale video from 1920x1080 to 640x360
         # (This was a workaround for an issue with depthai)
-        colorCam.setIspScale((1,3))
+        #colorCam.setIspScale((1,3))
 
         manip_mn = pipeline.createImageManip()
         if use_tyolo_v4:
@@ -744,6 +818,41 @@ class RobotVision(Node):
         self.get_logger().debug("Pipeline created.")
         return pipeline
 
+    # Update map of Hailo face detection result to tracklet
+    def map_hailo_meta_to_tracklets(self, tracklets, hailo_meta):
+        for det in hailo_meta:
+            if det['type'] != 'face_recog':
+                continue
+            face_id = det['label']
+
+            # Is this face_id already mapped to a tracklet?
+            mapped_tracklet = get_key_from_value(self.tracklet_to_faceid, face_id)
+            if mapped_tracklet == None:
+                x1 = det['bb']['xmin']
+                x2 = det['bb']['xmin'] + det['bb']['width']
+                y1 = det['bb']['ymin']
+                y2 = det['bb']['ymin'] + det['bb']['height']
+
+                for tracklet in tracklets:
+                    if tracklet.srcImgDetection.xmin < x1 < x2 < tracklet.srcImgDetection.xmax and \
+                        tracklet.srcImgDetection.ymin < y1 < y2 < tracklet.srcImgDetection.ymax:
+                        self.tracklet_to_faceid[tracklet.id] = face_id
+                        self.get_logger().info('Mapped tracklet id %d to face_id %s' % (tracklet.id, face_id))
+                        break
+            else:
+                self.get_logger().debug('Already mapped tracklet id %d to face_id %s' % (mapped_tracklet, face_id))
+
+        # Forget tracklet-to-face-id mapping if the tracklet has expired                            
+        to_remove = []
+        for tracklet_id in self.tracklet_to_faceid.keys():
+            if any(x.id == tracklet_id for x in tracklets):
+                continue
+            to_remove.append(tracklet_id)
+            self.get_logger().info('Removing old tracklet id %d' % tracklet_id)
+
+        for key in to_remove:
+            del self.tracklet_to_faceid[key]                        
+
     # Publish detections to other ROS nodes
     # Uses a custom message.
     def publish_detections(self, labelMap, tracklets, camera, publisher):
@@ -752,7 +861,6 @@ class RobotVision(Node):
         objList = []
 
         self.get_logger().debug("Publishing detections for camera: %s" % camera)
-
 
         for tracklet in tracklets:
             try:
@@ -763,6 +871,10 @@ class RobotVision(Node):
             # Hack to avoid false person detection of blank wall
             if (label == 'person' and (tracklet.srcImgDetection.xmax - tracklet.srcImgDetection.xmin) > 0.7):
                 continue
+
+            face_id = ''
+            if tracklet.id in self.tracklet_to_faceid.keys():
+                face_id = self.tracklet_to_faceid[tracklet.id]
 
             desc = ObjectDesc()
             desc.id = tracklet.id
@@ -779,6 +891,7 @@ class RobotVision(Node):
             desc.bb_x_max = tracklet.srcImgDetection.xmax
             desc.bb_y_min = tracklet.srcImgDetection.ymin
             desc.bb_y_max = tracklet.srcImgDetection.ymax
+            desc.unique_id = face_id
             objList += (desc,)
 
         # Publish the object message to our topic
