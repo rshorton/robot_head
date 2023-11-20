@@ -16,7 +16,7 @@ import rclpy
 import cv2
 
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 
 from rclpy.node import Node
 
@@ -31,14 +31,20 @@ class CameraViewer(Node):
             '/color/image',
             self.image_callback,
             10)
+        
+        self.imageSubCompr = self.create_subscription(
+            CompressedImage,
+            '/color/image/compressed',
+            self.image_callback_compr,
+            10)
+
         self.bridge = CvBridge()
 
         self.setWinPos = True
 
-    def image_callback(self, msg):
-        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        cv_image = cv2.resize(cv_image, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)
-        cv2.imshow("image", cv_image)
+    def show_image(self, img):
+        img = cv2.resize(img, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)
+        cv2.imshow("image", img)
 
         # Set initial window pos
         if self.setWinPos:
@@ -46,6 +52,14 @@ class CameraViewer(Node):
             cv2.moveWindow("image", 78, 25)
 
         key = cv2.waitKey(1)
+
+    def image_callback(self, msg):
+        img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        self.show_image(img)
+
+    def image_callback_compr(self, msg):
+        img = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
+        self.show_image(img)
 
 
 def main(args=None):
