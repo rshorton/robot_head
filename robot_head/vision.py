@@ -58,8 +58,8 @@ use_tyolo_v4 = False
 use_imu = False
 pub_detection_frame = True
 
-hailo_ai_pipeline = False
-pub_compressed_image = False
+hailo_ai_pipeline = True
+pub_compressed_image = True
 
 objects_to_track = ["person", "cat"]
 
@@ -189,8 +189,11 @@ class RobotVision(Node):
         self.save_image = None
 
         if hailo_ai_pipeline:
-            self.hailo_meta_sink = hailo_zmq_meta_sink(port = 5558)
-            self.hailo_meta_sink.open()
+            self.hailo_meta_sink_face_recog = hailo_zmq_meta_sink(port = 5558)
+            self.hailo_meta_sink_face_recog.open()
+
+            self.hailo_meta_sink_person_reid = hailo_zmq_meta_sink(port = 5559)
+            self.hailo_meta_sink_person_reid.open()
 
             # Publisher for camera color image sent to Hailo AI
             # pipeline without annotations.
@@ -219,7 +222,6 @@ class RobotVision(Node):
             if use_imu:
                 imuQueue = device.getOutputQueue(name="imu", maxSize=2, blocking=False)
 
-            frame = None
             edgeFrame = None
             inEdgeFrame = None
             inBallDetectNN = None
@@ -231,7 +233,6 @@ class RobotVision(Node):
             fps = 0
             white = (255, 255, 255)
             color = (0, 255, 0)
-            rect_color = (128, 128, 128)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.5
             disp_cnt = 0
@@ -243,9 +244,8 @@ class RobotVision(Node):
 
             save_cnt = 0
 
-            hailo_meta = []
-            hailo_frame_cnt = 0
-            self.tracklet_to_faceid = {}
+            self.hailo_obj_id = 0
+            self.hailo_obj_list = {}
 
             while True:
 
@@ -253,12 +253,7 @@ class RobotVision(Node):
 
                 # Read meta data from the Hailo AI pipeline
                 if hailo_ai_pipeline:
-                    meta = self.hailo_meta_sink.read(self.get_logger())
-                    if len(meta) > 0:
-                        hailo_meta = meta
-                        hailo_frame_cnt = 0
-                    elif hailo_frame_cnt > 5:
-                        hailo_meta = []
+                    self.read_hailo_meta()
 
                 try:
                     inPreviewCAM = previewQueueCAM.tryGet()
@@ -282,8 +277,8 @@ class RobotVision(Node):
 
                     # Map the Hailo meta data (currently facial recog)
                     # to the tracklets
-                    if hailo_ai_pipeline and self.hailo_meta_sink and len(hailo_meta) > 0:
-                        self.map_hailo_meta_to_tracklets(tracklets, hailo_meta)
+                    if hailo_ai_pipeline and len(self.hailo_obj_list) > 0:
+                        self.map_hailo_meta_to_tracklets(tracklets)
 
                     # For debug
                     if print_detections:
@@ -357,8 +352,6 @@ class RobotVision(Node):
                     frameHailo = frameCAM.copy()
                     hailo_rgb = cv2.cvtColor(frameHailo, cv2.COLOR_BGR2RGB)
                     self.imagePubToHailo.publish(self.bridge.cv2_to_imgmsg(hailo_rgb, "rgb8"))
-                    hailo_frame_cnt += 1
-
 
                 # The Pose landmark NN input needs to be square.
                 # Determine the xoffset on the left and right side of the image around
@@ -515,17 +508,26 @@ class RobotVision(Node):
                         cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
 
                     # Draw annotations for Hailo meta data    
-                    if len(hailo_meta) > 0:
-                        for det in hailo_meta:
-                            if det['type'] != 'face_recog':
+                    if len(self.hailo_obj_list) > 0:
+                        for k, value in self.hailo_obj_list.items():
+                            if value['stale'] or value['face_id'] == None:
                                 continue
-                            #print('det: %s' % det)
-                            label = det['label']
+
+                            # If the face recog is stale, but we still know which person it
+                            # belongs to, then draw face recog ID for person bb.  Otherwise
+                            # draw a box around face and label it.
+                            bb = None
+                            if not value['face_recog_stale']:
+                                bb = value['face_bb']
+                            else:
+                                bb = value['bb']
+                            #print('det: %s' % value)
+                            label = value['face_id']
                             # Denormalize bounding box
-                            x1 = int(det['bb']['xmin']*widthCAM)
-                            x2 = int((det['bb']['xmin'] + det['bb']['width'])*widthCAM)
-                            y1 = int(det['bb']['ymin']*heightCAM)
-                            y2 = int((det['bb']['ymin'] + det['bb']['height'])*heightCAM)
+                            x1 = int(bb['xmin']*widthCAM)
+                            x2 = int(bb['xmax']*widthCAM)
+                            y1 = int(bb['ymin']*heightCAM)
+                            y2 = int(bb['ymax']*heightCAM)
 
                             if flipCAM:
                                 swap = x2
@@ -817,41 +819,151 @@ class RobotVision(Node):
 
         self.get_logger().debug("Pipeline created.")
         return pipeline
+    
+    def read_hailo_meta(self):
+        # Returns a list of current face recognitions - these can extend beyond the initial
+        # recognition if the face is still being tracked
+        meta_face = self.hailo_meta_sink_face_recog.read(self.get_logger())
 
-    # Update map of Hailo face detection result to tracklet
-    def map_hailo_meta_to_tracklets(self, tracklets, hailo_meta):
-        for det in hailo_meta:
-            if det['type'] != 'face_recog':
+        # Returns a list of persons tracked with possibly a person re-id ID
+        meta_person = self.hailo_meta_sink_person_reid.read(self.get_logger())
+
+        self.get_logger().info('meta_face cnt %d, meta_person cnt %d' % (len(meta_face), len(meta_person)))
+
+        now = time.monotonic()
+
+        # Add person tracking ID if not in list.
+        for person in meta_person:
+            key = None
+
+            if 'tracker_id' not in person:
+                self.get_logger().info('tracker_id not in person')
                 continue
-            face_id = det['label']
 
-            # Is this face_id already mapped to a tracklet?
-            mapped_tracklet = get_key_from_value(self.tracklet_to_faceid, face_id)
-            if mapped_tracklet == None:
-                x1 = det['bb']['xmin']
-                x2 = det['bb']['xmin'] + det['bb']['width']
-                y1 = det['bb']['ymin']
-                y2 = det['bb']['ymin'] + det['bb']['height']
+            if 'reid_id' not in person:
+                person['reid_id'] = None
 
-                for tracklet in tracklets:
-                    if tracklet.srcImgDetection.xmin < x1 < x2 < tracklet.srcImgDetection.xmax and \
-                        tracklet.srcImgDetection.ymin < y1 < y2 < tracklet.srcImgDetection.ymax:
-                        self.tracklet_to_faceid[tracklet.id] = face_id
-                        self.get_logger().info('Mapped tracklet id %d to face_id %s' % (tracklet.id, face_id))
-                        break
+            self.get_logger().debug('person, tracker_id: %s, reid_id: %s' % (person['tracker_id'], person['reid_id']))
+
+            for k, value in self.hailo_obj_list.items():
+                if person['tracker_id'] == value['tracker_id'] or \
+                    (person['reid_id'] != None and person['reid_id'] == value['reid_id']):
+                    key = k
+                    break
+
+            # Add if not found            
+            if key == None:
+                # Use an ID for this list that is independent of both the tracker ID and the re-id ID
+                # since the tracker ID might change later, and since the re-id ID may not be available initially
+                self.hailo_obj_id += 1
+                key = str(self.hailo_obj_id)
+                self.hailo_obj_list[key] = {'face_id': None, 'tracklet_id': None, 'stale': True, 'face_recog_stale': False, 'face_last_update': 0.0}
+
+            self.hailo_obj_list[key]['bb'] = person['bb']
+            self.hailo_obj_list[key]['conf'] = person['conf']
+            self.hailo_obj_list[key]['tracker_id'] = person['tracker_id']
+            self.hailo_obj_list[key]['reid_id'] = person['reid_id']
+            self.hailo_obj_list[key]['last_update'] = now
+
+        # Associate face recognition ID with a person object.  Only try to match to current person objects
+        # vs. old objects (that are kept around in case the person returns)
+        for face in meta_face:
+            key_prev_mapped = None
+            best_key = None
+            best = 0.0
+
+            # Look for the person object whose BB intersects the best with the face BB
+            for k, value in self.hailo_obj_list.items():
+                if now - value['last_update'] <= 0.5:
+                    dx = min(value['bb']['xmax'], face['bb']['xmax']) - max(value['bb']['xmin'], face['bb']['xmin'])
+                    dy = min(value['bb']['ymax'], face['bb']['ymax']) - max(value['bb']['ymin'], face['bb']['ymin'])
+                    if (dx >= 0.0) and (dy >= 0.0):
+                        total = (face['bb']['xmax'] - face['bb']['xmin']) * (face['bb']['ymax'] - face['bb']['ymin'])
+                        intr = dx*dy/abs(total)
+                        if intr > best:
+                            best = intr
+                            best_key = k
+
+                # Also determine the previously person mapped to this face ID if any    
+                if face['id'] == value['face_id']:
+                    key_prev_mapped = k
+
+            # If the face BB overlapped a person object, then assign face ID to person object
+            if best_key != None:
+                # Remove previous mapping
+                if key_prev_mapped != None:
+                    self.hailo_obj_list[key_prev_mapped]['face_id'] = None
+
+                self.hailo_obj_list[best_key]['face_id'] = face['id']
+                self.hailo_obj_list[best_key]['face_bb'] = face['bb']
+                self.hailo_obj_list[best_key]['face_last_update'] = now
+                self.get_logger().info('Mapped face_id %s to HailoObjID %s' % (face['id'], best_key))                
             else:
-                self.get_logger().debug('Already mapped tracklet id %d to face_id %s' % (mapped_tracklet, face_id))
+                self.get_logger().info('Cannot map face_id %s to person_id' % face['id'])                
 
-        # Forget tracklet-to-face-id mapping if the tracklet has expired                            
+        # Prune expired person objects that don't have a face mapping since keeping
+        # them around isn't useful
         to_remove = []
-        for tracklet_id in self.tracklet_to_faceid.keys():
-            if any(x.id == tracklet_id for x in tracklets):
-                continue
-            to_remove.append(tracklet_id)
-            self.get_logger().info('Removing old tracklet id %d' % tracklet_id)
+        for k, value in self.hailo_obj_list.items():
+            if value['face_id'] == None and (time.monotonic() - value['last_update'] > 2.0):
+                to_remove.append(k)
+                self.get_logger().info('Removing old person object, key %s' % k)
+
+            value['stale'] = now - value['last_update'] > 1.0
+            value['face_recog_stale'] = now - value['face_last_update'] > 0.5
 
         for key in to_remove:
-            del self.tracklet_to_faceid[key]                        
+            del self.hailo_obj_list[key]                        
+
+        self.get_logger().info('List after updating:')
+        for k, value in self.hailo_obj_list.items():
+            self.get_logger().info('person, key: %s, tracker id: %s, reid id: %s, face id: %s'
+                                    % (k, value['tracker_id'], value['reid_id'], str(value['face_id'])))
+    
+    # Update mapping of Hailo person/face detection result to tracklet
+    def map_hailo_meta_to_tracklets(self, tracklets):
+        tracklet_assigned = {};
+        for tracklet in tracklets:
+            tracklet_assigned[tracklet.id] = False
+
+        now = time.monotonic()
+
+        for k, value in self.hailo_obj_list.items():
+            # Only care about this person if face recognition is valid and the position
+            # of the person was updated recently, otherwise BB matching will be poor
+            if value['face_id'] == None or (now - value['last_update'] > 0.5):
+                continue
+            
+            if value['tracklet_id'] != None:
+                # Make sure tracklet still valid
+                if not any(x.id == value['tracklet_id'] for x in tracklets):
+                    # Dead tracklet, remove association with person
+                    value['tracklet'] = None
+                    self.get_logger().info('Removing old tracklet id %d from person, key: %s' % (value['tracklet_id'], k))
+
+            if value['tracklet_id'] == None:
+                face_id = value['face_id']
+
+                best_tracklet = None
+                best_intr = 0.0
+
+                for tracklet in tracklets:
+                    if not tracklet_assigned[tracklet.id]:
+                        dx = min(value['bb']['xmax'], tracklet.srcImgDetection.xmax) - max(value['bb']['xmin'], tracklet.srcImgDetection.xmin)
+                        dy = min(value['bb']['ymax'], tracklet.srcImgDetection.ymax) - max(value['bb']['ymin'], tracklet.srcImgDetection.ymin)
+                        if (dx >= 0.0) and (dy >= 0.0):
+                            total = (value['bb']['xmax'] - value['bb']['xmin']) * (value['bb']['ymax'] - value['bb']['ymin'])
+                            intr = dx*dy/abs(total)
+                            if intr > best_intr:
+                                best_intr = intr
+                                best_tracklet = tracklet
+
+                if best_tracklet != None and best_intr > 0.7:
+                    value['tracklet_id'] = best_tracklet.id
+                    tracklet_assigned[best_tracklet.id] = True
+                    self.get_logger().info('Mapped tracklet id %d to face_id %s' % (best_tracklet.id, face_id))
+            else:
+                self.get_logger().debug('Already mapped tracklet id %d to face_id %s' % (value['tracklet_id'], value['face_id']))
 
     # Publish detections to other ROS nodes
     # Uses a custom message.
@@ -873,8 +985,11 @@ class RobotVision(Node):
                 continue
 
             face_id = ''
-            if tracklet.id in self.tracklet_to_faceid.keys():
-                face_id = self.tracklet_to_faceid[tracklet.id]
+            for k, value in self.hailo_obj_list.items():
+                if value['tracklet_id'] == tracklet.id:
+                    if value['face_id'] != None:
+                        face_id = value['face_id']
+                    break;
 
             desc = ObjectDesc()
             desc.id = tracklet.id

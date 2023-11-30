@@ -32,7 +32,8 @@ class hailo_zmq_meta_sink:
             try:
                 msg = self.socket.recv(flags=zmq.NOBLOCK)
                 msg = msg.decode()
-                #print("%s" % (msg))
+                if self.print:
+                    logger.debug('%s' % msg)
                 try:
                     meta = json.loads(msg)
                     if 'HailoROI' in meta:
@@ -41,33 +42,61 @@ class hailo_zmq_meta_sink:
                             for obj in subobjs:
                                 if  'HailoDetection' in obj:
                                     if self.print:
-                                        print('==================')                                        
+                                        logger.info('==================')                                        
 
                                     det = obj['HailoDetection']
                                     if self.print:
-                                        print('Detection, type: %s: conf: %f, x,y:(%f, %f), w,h:(%f, %f)' % (
-                                        det['label'],
-                                        det['confidence'],
-                                        det['HailoBBox']['xmin'],
-                                        det['HailoBBox']['ymin'],
-                                        det['HailoBBox']['width'],
-                                        det['HailoBBox']['height']))
+                                        logger.debug('Detection, type: %s: conf: %f, x,y:(%f, %f), w,h:(%f, %f)' % (
+                                            det['label'],
+                                            det['confidence'],
+                                            det['HailoBBox']['xmin'],
+                                            det['HailoBBox']['ymin'],
+                                            det['HailoBBox']['width'],
+                                            det['HailoBBox']['height']))
+
+                                    bb = {}
+                                    bb['xmin'] = det['HailoBBox']['xmin']
+                                    bb['xmax'] = det['HailoBBox']['xmin'] + det['HailoBBox']['width']
+                                    bb['ymin'] = det['HailoBBox']['ymin']
+                                    bb['ymax'] = det['HailoBBox']['ymin'] + det['HailoBBox']['height']
 
                                     if 'SubObjects' in det:
+                                        item = {}
                                         for detobj in det['SubObjects']:
                                             for key in detobj.keys():
                                                 if self.print:
-                                                    print('Object type: %s' % key)
+                                                    logger.info('Object type: %s' % key)
+
+                                                # Face recognition    
                                                 if key == 'HailoClassification':
                                                     if detobj[key]['classification_type'] == 'recognition_result':
-                                                        #print('face recognized as: %s' % detobj[key]['label'])
-                                                        item = {}
-                                                        item['type'] = 'face_recog';
-                                                        item['bb'] = det['HailoBBox']
+                                                        #logger.debug('face recognized as: %s' % detobj[key]['label'])
+                                                        item['type'] = 'face_recog'
+                                                        item['bb'] = bb
                                                         item['conf'] = det['confidence']
-                                                        item['label'] = detobj[key]['label'].rstrip(string.digits)
-                                                        out.append(item)
-                except:
+                                                        item['id'] = detobj[key]['label'].rstrip(string.digits)
+                                                
+                                                # Tracked face
+                                                elif key == 'HailoUniqueID' and det['label'] == 'person':
+                                                    item['type'] = 'person'
+                                                    item['bb'] = bb
+                                                    item['conf'] = det['confidence']
+
+                                                    # Re-id ID
+                                                    if detobj[key]['mode'] == 1:
+                                                        item['reid_id'] = detobj[key]['unique_id'] 
+                                                        logger.info('reid id: %s' % detobj[key]['unique_id'])
+                                                
+                                                    # Tracker ID
+                                                    elif detobj[key]['mode'] == 0:
+                                                        item['tracker_id'] = detobj[key]['unique_id']
+                                                        logger.info('tracker id: %s' % detobj[key]['unique_id'])
+
+                                                    
+                                        if len(item.keys()) > 0:
+                                            out.append(item)
+                except e:
+                    logger.info("error parsing hailo meta")
                     pass
 
             except zmq.Again as e:
