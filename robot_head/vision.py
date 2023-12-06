@@ -244,8 +244,8 @@ class RobotVision(Node):
 
             save_cnt = 0
 
-            self.hailo_obj_id = 0
-            self.hailo_obj_list = {}
+            self.next_person_id = 1
+            self.hailo_person_list = {}
 
             while True:
 
@@ -277,7 +277,7 @@ class RobotVision(Node):
 
                     # Map the Hailo meta data (currently facial recog)
                     # to the tracklets
-                    if hailo_ai_pipeline and len(self.hailo_obj_list) > 0:
+                    if hailo_ai_pipeline and len(self.hailo_person_list) > 0:
                         self.map_hailo_meta_to_tracklets(tracklets)
 
                     # For debug
@@ -508,8 +508,8 @@ class RobotVision(Node):
                         cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
 
                     # Draw annotations for Hailo meta data    
-                    if len(self.hailo_obj_list) > 0:
-                        for k, value in self.hailo_obj_list.items():
+                    if len(self.hailo_person_list) > 0:
+                        for k, value in self.hailo_person_list.items():
                             if value['stale'] or value['face_id'] == None:
                                 continue
 
@@ -828,11 +828,11 @@ class RobotVision(Node):
         # Returns a list of persons tracked with possibly a person re-id ID
         meta_person = self.hailo_meta_sink_person_reid.read(self.get_logger())
 
-        self.get_logger().info('meta_face cnt %d, meta_person cnt %d' % (len(meta_face), len(meta_person)))
+        self.get_logger().debug('meta_face cnt %d, meta_person cnt %d' % (len(meta_face), len(meta_person)))
 
         now = time.monotonic()
 
-        # Add person tracking ID if not in list.
+        # Add Hailo person tracking ID if not in person list stored by this object.
         for person in meta_person:
             key = None
 
@@ -845,7 +845,8 @@ class RobotVision(Node):
 
             self.get_logger().debug('person, tracker_id: %s, reid_id: %s' % (person['tracker_id'], person['reid_id']))
 
-            for k, value in self.hailo_obj_list.items():
+            for k, value in self.hailo_person_list.items():
+                # Match on the same ephemeral tracker_id or the longer-lasting reid_id
                 if person['tracker_id'] == value['tracker_id'] or \
                     (person['reid_id'] != None and person['reid_id'] == value['reid_id']):
                     key = k
@@ -855,48 +856,54 @@ class RobotVision(Node):
             if key == None:
                 # Use an ID for this list that is independent of both the tracker ID and the re-id ID
                 # since the tracker ID might change later, and since the re-id ID may not be available initially
-                self.hailo_obj_id += 1
-                key = str(self.hailo_obj_id)
-                self.hailo_obj_list[key] = {'face_id': None, 'tracklet_id': None, 'stale': True, 'face_recog_stale': False, 'face_last_update': 0.0}
+                key = str(self.next_person_id)
+                self.next_person_id += 1
+                self.hailo_person_list[key] = {'face_id': None, 'tracklet_id': None, 'stale': True, 'face_recog_stale': False, 'face_last_update': 0.0}
 
-            self.hailo_obj_list[key]['bb'] = person['bb']
-            self.hailo_obj_list[key]['conf'] = person['conf']
-            self.hailo_obj_list[key]['tracker_id'] = person['tracker_id']
-            self.hailo_obj_list[key]['reid_id'] = person['reid_id']
-            self.hailo_obj_list[key]['last_update'] = now
+            self.hailo_person_list[key]['bb'] = person['bb']
+            self.hailo_person_list[key]['conf'] = person['conf']
+            self.hailo_person_list[key]['tracker_id'] = person['tracker_id']
+            self.hailo_person_list[key]['reid_id'] = person['reid_id']
+            self.hailo_person_list[key]['last_update'] = now
 
         # Associate face recognition ID with a person object.  Only try to match to current person objects
-        # vs. old objects (that are kept around in case the person returns)
+        # vs. persons not currently seen (that are kept around in case the person returns)
         for face in meta_face:
             key_prev_mapped = None
             best_key = None
             best = 0.0
 
             # Look for the person object whose BB intersects the best with the face BB
-            for k, value in self.hailo_obj_list.items():
+            for k, value in self.hailo_person_list.items():
                 if now - value['last_update'] <= 0.5:
                     dx = min(value['bb']['xmax'], face['bb']['xmax']) - max(value['bb']['xmin'], face['bb']['xmin'])
                     dy = min(value['bb']['ymax'], face['bb']['ymax']) - max(value['bb']['ymin'], face['bb']['ymin'])
                     if (dx >= 0.0) and (dy >= 0.0):
                         total = (face['bb']['xmax'] - face['bb']['xmin']) * (face['bb']['ymax'] - face['bb']['ymin'])
                         intr = dx*dy/abs(total)
-                        if intr > best:
-                            best = intr
-                            best_key = k
+
+                        # Don't associate if the face overlaps more than one detected person
+                        # (wait until the persons separate)
+                        if intr > 0.0:
+                            if best == 0.0:
+                                best = intr
+                                best_key = k
+                            else:
+                                best_key = None
 
                 # Also determine the previously person mapped to this face ID if any    
                 if face['id'] == value['face_id']:
                     key_prev_mapped = k
 
             # If the face BB overlapped a person object, then assign face ID to person object
-            if best_key != None:
+            if best_key != None and self.hailo_person_list[best_key]['face_id'] == None:
                 # Remove previous mapping
                 if key_prev_mapped != None:
-                    self.hailo_obj_list[key_prev_mapped]['face_id'] = None
+                    self.hailo_person_list[key_prev_mapped]['face_id'] = None
 
-                self.hailo_obj_list[best_key]['face_id'] = face['id']
-                self.hailo_obj_list[best_key]['face_bb'] = face['bb']
-                self.hailo_obj_list[best_key]['face_last_update'] = now
+                self.hailo_person_list[best_key]['face_id'] = face['id']
+                self.hailo_person_list[best_key]['face_bb'] = face['bb']
+                self.hailo_person_list[best_key]['face_last_update'] = now
                 self.get_logger().info('Mapped face_id %s to HailoObjID %s' % (face['id'], best_key))                
             else:
                 self.get_logger().info('Cannot map face_id %s to person_id' % face['id'])                
@@ -904,7 +911,7 @@ class RobotVision(Node):
         # Prune expired person objects that don't have a face mapping since keeping
         # them around isn't useful
         to_remove = []
-        for k, value in self.hailo_obj_list.items():
+        for k, value in self.hailo_person_list.items():
             if value['face_id'] == None and (time.monotonic() - value['last_update'] > 2.0):
                 to_remove.append(k)
                 self.get_logger().info('Removing old person object, key %s' % k)
@@ -913,10 +920,10 @@ class RobotVision(Node):
             value['face_recog_stale'] = now - value['face_last_update'] > 0.5
 
         for key in to_remove:
-            del self.hailo_obj_list[key]                        
+            del self.hailo_person_list[key]                        
 
         self.get_logger().info('List after updating:')
-        for k, value in self.hailo_obj_list.items():
+        for k, value in self.hailo_person_list.items():
             self.get_logger().info('person, key: %s, tracker id: %s, reid id: %s, face id: %s'
                                     % (k, value['tracker_id'], value['reid_id'], str(value['face_id'])))
     
@@ -928,7 +935,7 @@ class RobotVision(Node):
 
         now = time.monotonic()
 
-        for k, value in self.hailo_obj_list.items():
+        for k, value in self.hailo_person_list.items():
             # Only care about this person if face recognition is valid and the position
             # of the person was updated recently, otherwise BB matching will be poor
             if value['face_id'] == None or (now - value['last_update'] > 0.5):
@@ -938,8 +945,8 @@ class RobotVision(Node):
                 # Make sure tracklet still valid
                 if not any(x.id == value['tracklet_id'] for x in tracklets):
                     # Dead tracklet, remove association with person
-                    value['tracklet'] = None
                     self.get_logger().info('Removing old tracklet id %d from person, key: %s' % (value['tracklet_id'], k))
+                    value['tracklet_id'] = None
 
             if value['tracklet_id'] == None:
                 face_id = value['face_id']
@@ -985,7 +992,7 @@ class RobotVision(Node):
                 continue
 
             face_id = ''
-            for k, value in self.hailo_obj_list.items():
+            for k, value in self.hailo_person_list.items():
                 if value['tracklet_id'] == tracklet.id:
                     if value['face_id'] != None:
                         face_id = value['face_id']
@@ -1008,6 +1015,8 @@ class RobotVision(Node):
             desc.bb_y_max = tracklet.srcImgDetection.ymax
             desc.unique_id = face_id
             objList += (desc,)
+            self.get_logger().info('Pub tracker: id: %s, unique_id: %s' % (desc.id, desc.unique_id))
+
 
         # Publish the object message to our topic
         msgObjects = ObjectDescArray()
