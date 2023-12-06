@@ -57,6 +57,9 @@ JOY_MSG_AXIS_TILT = 3
 joy_range_pan_deg = 120.0
 joy_range_tilt_deg = 80.0
 
+PAN_TRACK_GAIN = 50.0
+TILT_TRACK_GAIN = 30.0
+
 PI = math.pi
 
 # From: https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
@@ -237,7 +240,7 @@ class CameraServo:
                 self.obj_ave = self.obj_ave*0.3 + pos*0.7
 
                 diff = 0.5 - self.obj_ave
-                adj = diff * 50.0
+                adj = diff * PAN_TRACK_GAIN
                 if abs(adj) < 5.0:
                     adj = 0.0
             else:
@@ -245,7 +248,7 @@ class CameraServo:
                 self.obj_ave = self.obj_ave*0.3 + pos*0.7
 
                 diff = -1*(0.25 - self.obj_ave)
-                adj = diff * 40.0
+                adj = diff * TILT_TRACK_GAIN
                 if abs(adj) < 5.0:
                     adj = 0.0
 
@@ -413,6 +416,8 @@ class CameraTracker(Node):
         self.last_tracked_time = 0.0
         self.last_tracked_start_time = time.monotonic()
 
+        self.last_logged_track_object = None
+
         self.track_base_track_vel = 0.0
         self.track_base_track_pan_ave = None
 
@@ -557,7 +562,6 @@ class CameraTracker(Node):
 
             self.last_tracked_object = tracked_object
             self.last_tracked_time = time.monotonic()
-            #print("Now tracking: %s" % ("none" if tracked_object == None else tracked_object.id))
 
         return tracked_object
 
@@ -745,6 +749,22 @@ class CameraTracker(Node):
         
             self.publish_status()
             self.broadcast_camera_joints()
+            self.log_track_status()
+
+    def log_track_status(self):
+        if self.last_tracked_object == None and self.last_logged_track_object != None or \
+            self.last_tracked_object != None and self.last_logged_track_object == None  or \
+            (self.last_tracked_object != None and self.last_logged_track_object != None and
+            (self.last_tracked_object.id != self.last_logged_track_object.id or \
+            self.last_tracked_object.unique_id != self.last_logged_track_object.unique_id)):
+            
+            self.last_logged_track_object = self.last_tracked_object
+
+            if self.last_logged_track_object == None:
+                self.get_logger().info('Not tracking')
+            else:
+                self.get_logger().info('Tracking: %s  %s' % (self.last_tracked_object.id, self.last_tracked_object.unique_id))
+
 
     def publish_status(self):
         msg = TrackStatus()
