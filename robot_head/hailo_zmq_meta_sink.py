@@ -85,12 +85,12 @@ class hailo_zmq_meta_sink:
                                                     # Re-id ID
                                                     if detobj[key]['mode'] == 1:
                                                         item['reid_id'] = detobj[key]['unique_id'] 
-                                                        logger.info('reid id: %s' % detobj[key]['unique_id'])
+                                                        logger.debug('reid id: %s' % detobj[key]['unique_id'])
                                                 
                                                     # Tracker ID
                                                     elif detobj[key]['mode'] == 0:
                                                         item['tracker_id'] = detobj[key]['unique_id']
-                                                        logger.info('tracker id: %s' % detobj[key]['unique_id'])
+                                                        logger.debug('tracker id: %s' % detobj[key]['unique_id'])
 
                                                     
                                         if len(item.keys()) > 0:
