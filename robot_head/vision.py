@@ -52,6 +52,7 @@ cam_out_use_preview = True
 use_tracker = True
 print_detections = False
 show_det_info = True
+show_hailo_meta_info = False
 show_edge_image = False 
 syncNN = False
 use_tyolo_v4 = False
@@ -62,6 +63,7 @@ hailo_ai_pipeline = True
 pub_compressed_image = True
 
 objects_to_track = ["person", "cat"]
+min_conf = 0.6
 
 frame_rate = 10.0
 
@@ -114,7 +116,7 @@ def OverlayTextOnBox(img, x, y, xpad, ypad, text, bg_color, alpha, font, font_sc
         img[y:y+h, x:x+w] = blend
         return x, y, x + w, y + h
     except:
-        return None
+        return x, y, x, y
     
 def get_key_from_value(d, val):
     keys = [k for k, v in d.items() if v == val]
@@ -172,7 +174,7 @@ class RobotVision(Node):
         # tracked by the Tracker node
         self.subTracked = self.create_subscription(
             TrackStatus,
-            '/head/tracked',
+            '/head/track_status',
             self.tracked_callback,
             1)
 
@@ -232,6 +234,7 @@ class RobotVision(Node):
             counter = 0
             fps = 0
             white = (255, 255, 255)
+            yellow = (0, 255, 255)
             color = (0, 255, 0)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.5
@@ -246,6 +249,7 @@ class RobotVision(Node):
 
             self.next_person_id = 1
             self.hailo_person_list = {}
+            self.tracklet_to_hailo_meta = {}
 
             while True:
 
@@ -496,19 +500,27 @@ class RobotVision(Node):
                         y1 = max(0, y1)
                         y2 = max(0, y2)
 
-                        if show_det_info and self.tracked != None and self.tracked.object.id == tracklet.id:
-                            #conf = "{:d}%".format(int(tracklet.srcImgDetection.confidence*100))
-                            conf = None
+                        box_color = yellow if self.tracked != None and self.tracked.object.id == tracklet.id else white
+
+                        if show_det_info:
+                            drawx = x1 + 2
+                            drawy = y1 + 2        
+                            if tracklet.id in self.tracklet_to_hailo_meta.keys():
+                                face_id = self.hailo_person_list[self.tracklet_to_hailo_meta[tracklet.id]]['face_id']
+                                drawy, _, _, drawy = OverlayTextOnBox(frameCAM, drawx, drawy, 5, 5, [face_id], (0, 0, 0), 0.7, font, font_scale*3, box_color, 3)
+
+                            conf = "{:d}%".format(int(tracklet.srcImgDetection.confidence*100))
+                            #conf = None
                             pos_x = f"x: {int(tracklet.spatialCoordinates.z)}"
                             pos_y = f"y: {int(tracklet.spatialCoordinates.x)*-1}"
                             pos_z = f"z: {int(tracklet.spatialCoordinates.y)}"
                             trk_id = f'id: {tracklet.id}'
-                            OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [conf, pos_x, pos_y, pos_z, trk_id], (0, 0, 0), 0.4, font, font_scale, white, 1)
+                            OverlayTextOnBox(frameCAM, drawx, drawy, 5, 5, [conf, pos_x, pos_y, pos_z, trk_id], (0, 0, 0), 0.7, font, font_scale*1.5, white, 1)
 
-                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
+                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), box_color, font)
 
                     # Draw annotations for Hailo meta data    
-                    if len(self.hailo_person_list) > 0:
+                    if show_hailo_meta_info and len(self.hailo_person_list) > 0:
                         for k, value in self.hailo_person_list.items():
                             if value['stale'] or value['face_id'] == None:
                                 continue
@@ -537,7 +549,7 @@ class RobotVision(Node):
                             y1 = max(0, y1)
                             y2 = max(0, y2)
 
-                            OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [label], (0, 0, 0), 0.4, font, font_scale, white, 1)
+                            OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [label], (0, 0, 0), 0.8, font, font_scale*3, white, 3)
                             cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
 
                     OverlayTextOnBox(frameCAM, 0, frameCAM.shape[0] - 25, 5, 5, ["fps: {:.2f}".format(fps)], (0, 0, 0), 0.4, font, font_scale, white, 1)
@@ -710,7 +722,7 @@ class RobotVision(Node):
         track_types = [self.labelMap.index(object) for object in objects_to_track]
 
         spatialDetectionNetwork.setNumInferenceThreads(1)
-        spatialDetectionNetwork.setConfidenceThreshold(0.3)
+        spatialDetectionNetwork.setConfidenceThreshold(min_conf)
         spatialDetectionNetwork.input.setQueueSize(1)
         spatialDetectionNetwork.input.setBlocking(False)
         spatialDetectionNetwork.setBoundingBoxScaleFactor(0.3)
@@ -896,7 +908,7 @@ class RobotVision(Node):
                     key_prev_mapped = k
 
             # If the face BB overlapped a person object, then assign face ID to person object
-            if best_key != None and self.hailo_person_list[best_key]['face_id'] == None:
+            if best_key != None:
                 # Remove previous mapping
                 if key_prev_mapped != None:
                     self.hailo_person_list[key_prev_mapped]['face_id'] = None
@@ -929,9 +941,7 @@ class RobotVision(Node):
     
     # Update mapping of Hailo person/face detection result to tracklet
     def map_hailo_meta_to_tracklets(self, tracklets):
-        tracklet_assigned = {};
-        for tracklet in tracklets:
-            tracklet_assigned[tracklet.id] = False
+        self.tracklet_to_hailo_meta = {};
 
         now = time.monotonic()
 
@@ -955,11 +965,12 @@ class RobotVision(Node):
                 best_intr = 0.0
 
                 for tracklet in tracklets:
-                    if not tracklet_assigned[tracklet.id]:
-                        dx = min(value['bb']['xmax'], tracklet.srcImgDetection.xmax) - max(value['bb']['xmin'], tracklet.srcImgDetection.xmin)
-                        dy = min(value['bb']['ymax'], tracklet.srcImgDetection.ymax) - max(value['bb']['ymin'], tracklet.srcImgDetection.ymin)
+                    if not tracklet.id in self.tracklet_to_hailo_meta.keys():
+                        face_bb = value['bb'] 
+                        dx = min(face_bb['xmax'], tracklet.srcImgDetection.xmax) - max(face_bb['xmin'], tracklet.srcImgDetection.xmin)
+                        dy = min(face_bb['ymax'], tracklet.srcImgDetection.ymax) - max(face_bb['ymin'], tracklet.srcImgDetection.ymin)
                         if (dx >= 0.0) and (dy >= 0.0):
-                            total = (value['bb']['xmax'] - value['bb']['xmin']) * (value['bb']['ymax'] - value['bb']['ymin'])
+                            total = (face_bb['xmax'] - face_bb['xmin']) * (face_bb['ymax'] - face_bb['ymin'])
                             intr = dx*dy/abs(total)
                             if intr > best_intr:
                                 best_intr = intr
@@ -967,9 +978,10 @@ class RobotVision(Node):
 
                 if best_tracklet != None and best_intr > 0.7:
                     value['tracklet_id'] = best_tracklet.id
-                    tracklet_assigned[best_tracklet.id] = True
-                    self.get_logger().info('Mapped tracklet id %d to face_id %s' % (best_tracklet.id, face_id))
+                    self.tracklet_to_hailo_meta[best_tracklet.id] = k
+                    self.get_logger().info('Mapped tracklet id %d to face_id %s (%s)' % (best_tracklet.id, face_id, k))
             else:
+                self.tracklet_to_hailo_meta[value['tracklet_id']] = k
                 self.get_logger().debug('Already mapped tracklet id %d to face_id %s' % (value['tracklet_id'], value['face_id']))
 
     # Publish detections to other ROS nodes
@@ -991,12 +1003,9 @@ class RobotVision(Node):
             if (label == 'person' and (tracklet.srcImgDetection.xmax - tracklet.srcImgDetection.xmin) > 0.7):
                 continue
 
-            face_id = ''
-            for k, value in self.hailo_person_list.items():
-                if value['tracklet_id'] == tracklet.id:
-                    if value['face_id'] != None:
-                        face_id = value['face_id']
-                    break;
+            face_id = None
+            if tracklet.id in self.tracklet_to_hailo_meta.keys():
+                face_id = self.hailo_person_list[self.tracklet_to_hailo_meta[tracklet.id]]['face_id']
 
             desc = ObjectDesc()
             desc.id = tracklet.id
@@ -1013,7 +1022,7 @@ class RobotVision(Node):
             desc.bb_x_max = tracklet.srcImgDetection.xmax
             desc.bb_y_min = tracklet.srcImgDetection.ymin
             desc.bb_y_max = tracklet.srcImgDetection.ymax
-            desc.unique_id = face_id
+            desc.unique_id = '' if face_id is None else face_id
             objList += (desc,)
             self.get_logger().info('Pub tracker: id: %s, unique_id: %s' % (desc.id, desc.unique_id))
 
@@ -1044,7 +1053,7 @@ class RobotVision(Node):
     # and should be annotated in the image.
     def tracked_callback(self, msg):
         self.tracked = msg
-        #self.get_logger().debug("tracked_callback, id= %d" % msg.id)
+        self.get_logger().debug("tracked_callback, id= %d" % msg.object.id)
 
     # Subscribed-to topic for triggering an image capture
     def save_image_callback(self, msg):
