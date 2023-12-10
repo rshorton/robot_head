@@ -95,8 +95,8 @@ class hailo_zmq_meta_sink:
                                                     
                                         if len(item.keys()) > 0:
                                             out.append(item)
-                except e:
-                    logger.info("error parsing hailo meta")
+                except Exception as err:
+                    logger.error('error parsing hailo meta, err=%s' % err)
                     pass
 
             except zmq.Again as e:

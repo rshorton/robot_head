@@ -249,7 +249,7 @@ class CameraServo:
 
                 diff = -1*(0.25 - self.obj_ave)
                 adj = diff * TILT_TRACK_GAIN
-                if abs(adj) < 5.0:
+                if abs(adj) < 3.0:
                     adj = 0.0
 
             self.obj_last_pos = pos
@@ -400,6 +400,7 @@ class CameraTracker(Node):
         self.track_sound_mode = 'None'          # Type of sound to trigger a scan: None, Any, Wakeword
         self.track_turn_base = False            # True if base should be turned to face tracked object
         self.track_object_type = 'person'       # Type of object to track
+        self.track_object_unique_id = ''        # Unique ID of object to track (such as for a person via face recog)
         self.track_min_confidence = 0.7         # Minimum confidence to start tracking
         self.track_scan_delay_sec = 1.0         # Number seconds to wait before scanning after losing a track
 
@@ -536,10 +537,24 @@ class CameraTracker(Node):
                 elif det.track_status != "TRACKED":
                     continue
 
+                self.get_logger().info('track_object_unique_id: %s, unique_id: %s' % (self.track_object_unique_id, det.unique_id))
+
+                # Always track the object having the specified unique_id
+                if self.track_object_unique_id != '':
+                    if det.unique_id != None and \
+                        det.unique_id.lower() == self.track_object_unique_id and \
+                        (self.last_tracked_object == None or det.id != self.last_tracked_object.id):
+
+                        tracked_object = det
+                        self.last_tracked_object  = det
+                        self.last_tracked_start_time = time.monotonic()
+                        self.get_logger().info('Now tracking object with unique_id: %s' % det.unique_id)
+                        break
+
                 # Select the closest object; either a new object if no last tracked
                 # or a closer object if more than one object of the desired type is being tracked.
                 # x is according to ROS conventions (pointing away from camera)
-                if (tracked_object == None or tracked_object.position.point.x > det.position.point.x) and \
+                elif (tracked_object == None or tracked_object.position.point.x > det.position.point.x) and \
                     det.confidence >= self.track_min_confidence:
                     tracked_object = det
                     self.last_tracked_start_time = time.monotonic()
@@ -773,6 +788,7 @@ class CameraTracker(Node):
         msg.settings.sound_mode = self.track_sound_mode
         msg.settings.turn_base = self.track_turn_base
         msg.settings.object_type = self.track_object_type
+        msg.settings.object_unique_id = self.track_object_unique_id
 
         if self.last_tracked_object != None:
             msg.object = self.last_tracked_object
@@ -958,14 +974,15 @@ class CameraTracker(Node):
                 self.head_rot_steps *= self.head_rot_dir
 
     def track_callback(self, msg):
-        self.get_logger().info('Received track cmd: mode: %s, scan_step: %s, sound_mode: %s, turn_base: %d, min_track_confidence: %f' % \
-            (msg.mode, msg.scan_step, msg.sound_mode, msg.turn_base, msg.min_confidence))
+        self.get_logger().info('Received track cmd: mode: %s, scan_step: %s, sound_mode: %s, turn_base: %d, object_unique_id: %s, min_track_confidence: %f' % \
+            (msg.mode, msg.scan_step, msg.sound_mode, msg.turn_base, msg.object_unique_id, msg.min_confidence))
         self.track_new_mode = msg.mode
         self.track_sound_mode = msg.sound_mode
         self.track_turn_base = msg.turn_base
         # Fix change scan_step to degrees
         self.scan_step = int(msg.scan_step)
         self.track_object_type = msg.object_type
+        self.track_object_unique_id = msg.object_unique_id.lower()
         self.track_min_confidence = msg.min_confidence
 
     # Command to set pan angle at the specified percent (+ right, - left)

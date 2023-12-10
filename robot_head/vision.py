@@ -52,7 +52,7 @@ cam_out_use_preview = True
 use_tracker = True
 print_detections = False
 show_det_info = True
-show_hailo_meta_info = False
+show_hailo_meta_info = True
 show_edge_image = False 
 syncNN = False
 use_tyolo_v4 = False
@@ -235,12 +235,13 @@ class RobotVision(Node):
             fps = 0
             white = (255, 255, 255)
             yellow = (0, 255, 255)
+            blue = (255, 0, 0)
             color = (0, 255, 0)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.5
             disp_cnt = 0
 
-            flipCAM = False
+            flipCAM = True
 
             last_region = None
             last_poses = None
@@ -337,7 +338,7 @@ class RobotVision(Node):
                                     cv2.putText(edgeFrame, f"Y: {int(tracklet.spatialCoordinates.y)}", (x2 + 10, y1 + 50), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
                                     cv2.putText(edgeFrame, f"Z: {int(tracklet.spatialCoordinates.z)}", (x2 + 10, y1 + 65), cv2.FONT_HERSHEY_TRIPLEX, 0.25, 255)
 
-                                    cv2.rectangle(edgeFrame, (x1, y1), (x2, y2), (255, 255, 0), cv2.FONT_HERSHEY_SIMPLEX)
+                                    cv2.rectangle(edgeFrame, (x1, y1), (x2, y2), (255, 255, 0), 1)
 
                                 self.publish_detections(["ball"], inBallDetectNN.tracklets, [], "oakd_right_camera", self.targetPublisher)
 
@@ -456,7 +457,7 @@ class RobotVision(Node):
                             xmax = int(bottomRight.x)
                             ymax = int(bottomRight.y)
 
-                            cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+                            cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, 1)
 
                     cv2.imshow("depth", depthFrameColor)
 
@@ -500,7 +501,12 @@ class RobotVision(Node):
                         y1 = max(0, y1)
                         y2 = max(0, y2)
 
-                        box_color = yellow if self.tracked != None and self.tracked.object.id == tracklet.id else white
+                        if self.tracked != None and self.tracked.object.id == tracklet.id:
+                            box_color = yellow
+                            box_thickness = 2
+                        else:
+                            box_color = white
+                            box_thickness = 1
 
                         if show_det_info:
                             drawx = x1 + 2
@@ -517,12 +523,12 @@ class RobotVision(Node):
                             trk_id = f'id: {tracklet.id}'
                             OverlayTextOnBox(frameCAM, drawx, drawy, 5, 5, [conf, pos_x, pos_y, pos_z, trk_id], (0, 0, 0), 0.7, font, font_scale*1.5, white, 1)
 
-                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), box_color, font)
+                        cv2.rectangle(frameCAM, (x1, y1), (x2, y2), box_color, box_thickness)
 
                     # Draw annotations for Hailo meta data    
                     if show_hailo_meta_info and len(self.hailo_person_list) > 0:
                         for k, value in self.hailo_person_list.items():
-                            if value['stale'] or value['face_id'] == None:
+                            if value['stale']: # or value['face_id'] == None:
                                 continue
 
                             # If the face recog is stale, but we still know which person it
@@ -550,7 +556,7 @@ class RobotVision(Node):
                             y2 = max(0, y2)
 
                             OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [label], (0, 0, 0), 0.8, font, font_scale*3, white, 3)
-                            cv2.rectangle(frameCAM, (x1, y1), (x2, y2), white, font)
+                            cv2.rectangle(frameCAM, (x1, y1), (x2, y2), blue, 1)
 
                     OverlayTextOnBox(frameCAM, 0, frameCAM.shape[0] - 25, 5, 5, ["fps: {:.2f}".format(fps)], (0, 0, 0), 0.4, font, font_scale, white, 1)
 
@@ -887,6 +893,9 @@ class RobotVision(Node):
 
             # Look for the person object whose BB intersects the best with the face BB
             for k, value in self.hailo_person_list.items():
+                if value['face_id'] != None and face['id'] != value['face_id']:
+                    continue
+
                 if now - value['last_update'] <= 0.5:
                     dx = min(value['bb']['xmax'], face['bb']['xmax']) - max(value['bb']['xmin'], face['bb']['xmin'])
                     dy = min(value['bb']['ymax'], face['bb']['ymax']) - max(value['bb']['ymin'], face['bb']['ymin'])
@@ -896,7 +905,7 @@ class RobotVision(Node):
 
                         # Don't associate if the face overlaps more than one detected person
                         # (wait until the persons separate)
-                        if intr > 0.0:
+                        if intr > 0.8:
                             if best == 0.0:
                                 best = intr
                                 best_key = k
@@ -910,7 +919,10 @@ class RobotVision(Node):
             # If the face BB overlapped a person object, then assign face ID to person object
             if best_key != None:
                 # Remove previous mapping
-                if key_prev_mapped != None:
+                if key_prev_mapped != None and key_prev_mapped != best_key:
+                    if self.hailo_person_list[best_key]['reid_id'] == None:
+                        self.hailo_person_list[best_key]['reid_id'] = self.hailo_person_list[key_prev_mapped]['reid_id']
+                        self.hailo_person_list[key_prev_mapped]['reid_id'] = None
                     self.hailo_person_list[key_prev_mapped]['face_id'] = None
 
                 self.hailo_person_list[best_key]['face_id'] = face['id']
@@ -936,8 +948,10 @@ class RobotVision(Node):
 
         self.get_logger().info('List after updating:')
         for k, value in self.hailo_person_list.items():
-            self.get_logger().info('person, key: %s, tracker id: %s, reid id: %s, face id: %s'
-                                    % (k, value['tracker_id'], value['reid_id'], str(value['face_id'])))
+            self.get_logger().info('person, key: %s, tracker id: %s, reid id: %s, face id: %s, last_update: %f, %s'
+                                    % (k, value['tracker_id'], value['reid_id'], 
+                                    str(value['face_id']), value['last_update'],
+                                    ('Stale' if value['stale'] else '')))
     
     # Update mapping of Hailo person/face detection result to tracklet
     def map_hailo_meta_to_tracklets(self, tracklets):
@@ -949,6 +963,7 @@ class RobotVision(Node):
             # Only care about this person if face recognition is valid and the position
             # of the person was updated recently, otherwise BB matching will be poor
             if value['face_id'] == None or (now - value['last_update'] > 0.5):
+                self.get_logger().info('Not mapping hailo person, face_id: %s, since Last update: %f' % (value['face_id'], now - value['last_update']))
                 continue
             
             if value['tracklet_id'] != None:
@@ -958,7 +973,7 @@ class RobotVision(Node):
                     self.get_logger().info('Removing old tracklet id %d from person, key: %s' % (value['tracklet_id'], k))
                     value['tracklet_id'] = None
 
-            if value['tracklet_id'] == None:
+            if True: #value['tracklet_id'] == None:
                 face_id = value['face_id']
 
                 best_tracklet = None
