@@ -537,7 +537,7 @@ class CameraTracker(Node):
                 elif det.track_status != "TRACKED":
                     continue
 
-                self.get_logger().info('track_object_unique_id: %s, unique_id: %s' % (self.track_object_unique_id, det.unique_id))
+                self.get_logger().debug('track_object_unique_id: %s, unique_id: %s' % (self.track_object_unique_id, det.unique_id))
 
                 # Always track the object having the specified unique_id
                 if self.track_object_unique_id != '':

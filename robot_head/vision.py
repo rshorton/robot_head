@@ -901,8 +901,7 @@ class RobotVision(Node):
             for p in range(len(meta_person)):
                 if 'reid_id' not in meta_person[p]:
                     meta_person[p]['reid_id'] = None
-
-                self.get_logger().info('new person, tracker_id: %d, reid_id: %s' % (meta_person[p]['tracker_id'], str(meta_person[p]['reid_id'])))
+                self.get_logger().debug('new person, tracker_id: %d, reid_id: %s' % (meta_person[p]['tracker_id'], str(meta_person[p]['reid_id'])))
 
                 for f in range(len(meta_face)):
                     # Cost is how far away the face BB is from the ideal face location on the person BB
@@ -1053,7 +1052,7 @@ class RobotVision(Node):
 
         # compute the area of both rectangles
         boxAArea = (boxA['xmax'] - boxA['xmin'] + 1) * (boxA['ymax'] - boxA['ymin'] + 1)
-        boxBArea = (boxB['xmax'] - boxB['xmax'] + 1) * (boxB['ymax'] - boxB['ymax'] + 1)
+        boxBArea = (boxB['xmax'] - boxB['xmin'] + 1) * (boxB['ymax'] - boxB['ymin'] + 1)
 
         return interArea / float(boxAArea + boxBArea - interArea)
 
@@ -1080,6 +1079,7 @@ class RobotVision(Node):
                     cost[p, t] = 1.0 - self.bb_intersection_over_union(person['bb'], bb)
                 p += 1
 
+            #print('cost: %s' % str(cost))
             _, col_ind = linear_sum_assignment(cost)
 
             self.get_logger().info('Assignment of tracklets to persons:')
@@ -1091,7 +1091,10 @@ class RobotVision(Node):
                 if c_idx >= len(tracklets):
                     continue
 
-                if cost[r, c_idx] < 0.8:
+                iou = 1.0 - cost[r, c_idx]        
+                if iou < 0.8:
+                    self.get_logger().info('IOU poor: %f, tracklet id %d to face_id %s (%s)' %
+                                            (iou, tracklets[c_idx].id, self.hailo_person_list[k]['face_id'], k))
                     continue
 
                 self.tracklet_to_hailo_meta[tracklets[c_idx].id] = k
