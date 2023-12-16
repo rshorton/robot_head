@@ -36,6 +36,11 @@ class hailo_zmq_meta_sink:
                     logger.debug('%s' % msg)
                 try:
                     meta = json.loads(msg)
+                    meta_frame = {}
+                    meta_frame['frame_idx'] = meta['buffer_offset']
+                    meta_frame['items'] = []
+                    out.append(meta_frame)
+
                     if 'HailoROI' in meta:
                         if 'SubObjects' in meta['HailoROI']:
                             subobjs = meta['HailoROI']['SubObjects']
@@ -53,7 +58,7 @@ class hailo_zmq_meta_sink:
                                             det['HailoBBox']['ymin'],
                                             det['HailoBBox']['width'],
                                             det['HailoBBox']['height']))
-
+                                    
                                     bb = {}
                                     bb['xmin'] = det['HailoBBox']['xmin']
                                     bb['xmax'] = det['HailoBBox']['xmin'] + det['HailoBBox']['width']
@@ -94,7 +99,7 @@ class hailo_zmq_meta_sink:
 
                                                     
                                         if len(item.keys()) > 0:
-                                            out.append(item)
+                                            meta_frame['items'].append(item)
                 except Exception as err:
                     logger.error('error parsing hailo meta, err=%s' % err)
                     pass
