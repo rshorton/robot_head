@@ -1003,7 +1003,6 @@ class RobotVision(Node):
                         p2['reid_id'] = None
                 self.hailo_person_list[key]['reid_id'] = person['reid_id']
 
-
             if person['face_id'] != None:
                 # Remove use of this id for another person
                 for _, p2 in self.hailo_person_list.items():
@@ -1012,7 +1011,6 @@ class RobotVision(Node):
                 self.hailo_person_list[key]['face_id'] = person['face_id']
                 self.hailo_person_list[key]['face_bb'] = person['bb']
                 self.hailo_person_list[key]['face_last_update'] = now
-
 
             self.hailo_person_list[key]['last_update'] = now
 
@@ -1082,7 +1080,7 @@ class RobotVision(Node):
                     cost[p, t] = 1.0 - self.bb_intersection_over_union(person['bb'], bb)
                 p += 1
 
-            row_ind, col_ind = linear_sum_assignment(cost)
+            _, col_ind = linear_sum_assignment(cost)
 
             self.get_logger().info('Assignment of tracklets to persons:')
             r = -1
