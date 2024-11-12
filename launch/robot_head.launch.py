@@ -21,7 +21,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             name='use_video_server', 
-            default_value='true',
+            default_value='false',
             description='Set to true to launch web video server'
         ),
 
