@@ -15,6 +15,7 @@
 # Controls the camera/head tracking servos to keep a person in view.
 # Also controls the emotional output features (head tilt, smile, talking indicator).
 
+import os
 import threading
 import time
 import math
@@ -88,8 +89,10 @@ def euler_from_quaternion(x, y, z, w):
 def init_servo_driver():
     global servo_ctrl
     if servo_ctrl is None:
+
+
         servo_ctrl = lewansoul_lx16a.ServoController(
-            serial.Serial(SERIAL_PORT, 115200, timeout=1))
+            serial.Serial(os.environ.get('HEAD_SERVO_SERIAL_DEVICE', SERIAL_PORT), 115200, timeout=1))
 
 class CameraServo:
     def __init__(self, joint, logger):
