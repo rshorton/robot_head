@@ -36,6 +36,7 @@ from robot_head_interfaces.msg import Smile, Antenna, PointerLight
 # ADAFRUIT PCA9685 16-channel servo driver
 import time
 from adafruit_servokit import ServoKit
+from adafruit_extended_bus import ExtendedI2C as I2C
 
 smile_led_map =   [1, 2, 3, 8, 4, 5, 6, 7, 9]
 smile_patterns = [[0, 0, 0, 1, 1, 1, 0, 0, 0],
@@ -78,7 +79,8 @@ def init_servo_driver():
     global servo_kit
     global pca
     if not servo_inited:
-        servo_kit = ServoKit(channels=16, frequency=50)
+        i2c = I2C(8)
+        servo_kit = ServoKit(channels=16, frequency=50, i2c=i2c)
         servo_inited = True
         pca = servo_kit._pca
 
