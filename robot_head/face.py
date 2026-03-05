@@ -15,6 +15,7 @@
 # Controls the camera/head tracking servos to keep a person in view.
 # Also controls the emotional output features (head tilt, smile, talking indicator).
 
+import os
 import threading
 import sys
 import time
@@ -74,12 +75,12 @@ servo_inited = False
 servo_kit = None
 pca = None
 
-def init_servo_driver():
+def init_servo_driver(i2c_bus):
     global servo_inited
     global servo_kit
     global pca
     if not servo_inited:
-        i2c = I2C(8)
+        i2c = I2C(i2c_bus)
         servo_kit = ServoKit(channels=16, frequency=50, i2c=i2c)
         servo_inited = True
         pca = servo_kit._pca
@@ -88,7 +89,11 @@ class FacialExpression(Node):
     def __init__(self):
         super().__init__('facial_expression')
 
-        init_servo_driver()
+        self.declare_parameter('i2c_bus', int(os.getenv("ROBOT_I2C_BUS", 8)))
+        i2c_bus = self.get_parameter('i2c_bus').get_parameter_value().integer_value
+        self.get_logger().info(f'Using i2c bus: {i2c_bus}')
+
+        init_servo_driver(i2c_bus)
 
         # Topic for receiving smile display commands.
         # These commands specify the smile level and/or temporary
