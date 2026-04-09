@@ -23,7 +23,7 @@ import pathlib
 from itertools import islice
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
+#from scipy.optimize import linear_sum_assignment
 import cv2
 
 import depthai as dai
@@ -1140,7 +1140,7 @@ class RobotVision(Node):
             desc.bb_y_max = tracklet.srcImgDetection.ymax
             desc.unique_id = '' if face_id is None else face_id
             objList += (desc,)
-            self.get_logger().info('Pub tracker: id: %s, unique_id: %s' % (desc.id, desc.unique_id))
+            self.get_logger().debug('Pub tracker: id: %s, unique_id: %s' % (desc.id, desc.unique_id))
 
 
         # Publish the object message to our topic
