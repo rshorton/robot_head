@@ -40,7 +40,9 @@ from adafruit_servokit import ServoKit
 from adafruit_extended_bus import ExtendedI2C as I2C
 
 smile_led_map =   [1, 2, 3, 8, 4, 5, 6, 7, 9]
-smile_patterns = [[0, 0, 0, 1, 1, 1, 0, 0, 0],
+smile_patterns = [[0, 0, 0, 0, 0, 0, 0, 0, 0],
+                  [0, 0, 0, 0, 1, 0, 0, 0, 0],
+                  [0, 0, 0, 1, 1, 1, 0, 0, 0],
                   [0, 0, 1, 1, 1, 1, 1, 0, 0],
                   [0, 1, 1, 1, 1, 1, 1, 1, 0],
                   [1, 1, 1, 1, 1, 1, 1, 1, 1]]
@@ -138,7 +140,7 @@ class FacialExpression(Node):
             2)
 
         self.smile_mode_def = "smile"
-        self.smile_level_def = 0
+        self.smile_level_def = 2
 
         self.smile_mode = self.smile_mode_def
         self.smile_level = self.smile_level_def
@@ -184,6 +186,7 @@ class FacialExpression(Node):
         if msg.use_as_default == True:
             self.smile_mode_def = msg.mode
             self.smile_level_def = msg.level
+        self.update_smile()
 
     def set_smile(self):
         for i in range(0, len(self.smile_leds)):
@@ -191,6 +194,8 @@ class FacialExpression(Node):
 
     def update_smile(self):
         if self.smile_cmd_mode != None:
+            self.get_logger().debug(f'New smile cmd {self.smile_cmd_mode}')
+
             mode = self.smile_cmd_mode
             self.smile_cmd_mode = None
 
@@ -212,7 +217,7 @@ class FacialExpression(Node):
                     self.smile_level = self.smile_cmd_level
                     self.smile_leds = smile_patterns[self.smile_level]
                     self.smile_delta = 0
-                    self.smile_duration = 0
+                    self.smile_duration = int((self.smile_cmd_duration_ms + 99)/100)
                     self.set_smile()
 
             # Already smiling but a new level?
@@ -306,11 +311,14 @@ class FacialExpression(Node):
             self.antenna_right_idx, self.antenna_right_state = set_antenna(antenna_right_ch, self.antenna.right_blink_pattern, self.antenna_right_idx, self.antenna_right_state)
 
     def listening_callback(self, msg):
-        self.get_logger().info('Received listening active msg: speaking: %d' % msg.data)
+        self.get_logger().debug('Received listening active msg: speaking: %d' % msg.data)
         self.listening = msg.data
 
     def speaking_callback(self, msg):
-        self.get_logger().info('Received speaking active msg: speaking: %d' % msg.data)
+        self.get_logger().debug('Received speaking active msg: speaking: %d' % msg.data)
+        # Ignore if currently processing a smile
+        if self.smile_duration > 0:
+            return
         if msg.data:
             self.smile_cmd_mode = "talking"
         # Go back to default smile when talking stops
