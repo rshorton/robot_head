@@ -235,7 +235,7 @@ class FacialExpression(Node):
             return
 
         if self.smile_delta != 0:
-            self.smile_level = min(self.smile_level + self.smile_delta, len(smile_patterns) - 1)
+            self.smile_level = max(0, min(self.smile_level + self.smile_delta, len(smile_patterns) - 1))
             self.smile_leds = smile_patterns[self.smile_level]
             self.set_smile()
 
