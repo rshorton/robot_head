@@ -949,7 +949,6 @@ class CameraTracker(Node):
     def update_head_rotation(self):
         if self.head_rot_cmd_angle != None:
             self.head_rot_steps = self.head_rot_cmd_angle/self.servo_rotate.servo_degrees_per_step
-            self.head_rot_cmd_angle = None
 
             if self.head_rot_steps < 0:
                 self.head_rot_dir = -1
@@ -958,8 +957,14 @@ class CameraTracker(Node):
 
             self.head_rot_steps *= self.head_rot_dir
             self.head_rot_dwell_ticks = int((self.head_rot_cmd_dwell_dur + 99)/100)
+            self.get_logger().debug('rot cmd: angle: %f, rot_steps: %f, rot_dir: %f' % \
+                (self.head_rot_cmd_angle, self.head_rot_steps, self.head_rot_dir))
+            self.head_rot_cmd_angle = None
 
         if self.head_rot_steps > 0:
+            self.get_logger().debug('rot mv: rot_steps: %f, pos: %f' % \
+                (self.head_rot_steps, self.servo_rotate.servo_pos))
+
             self.servo_rotate.set_pos(self.servo_rotate.servo_pos + self.head_rot_dir*10)
             self.head_rot_steps -= 10
 
