@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
 import cv2
 
 from cv_bridge import CvBridge
@@ -30,13 +31,13 @@ class CameraViewer(Node):
             Image,
             '/color/image',
             self.image_callback,
-            10)
+            qos_profile=qos_profile_sensor_data)
         
         self.imageSubCompr = self.create_subscription(
             CompressedImage,
             '/color/image/compressed',
             self.image_callback_compr,
-            10)
+            qos_profile=qos_profile_sensor_data)
 
         self.bridge = CvBridge()
 

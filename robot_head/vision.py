@@ -29,6 +29,7 @@ import cv2
 import depthai as dai
 
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.node import Node
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, CompressedImage
@@ -133,9 +134,9 @@ class RobotVision(Node):
         self.image = None
         # Publisher for camera color image
         if pub_compressed_image:
-            self.imagePub = self.create_publisher(CompressedImage, '/color/image/compressed', 10)
+            self.imagePub = self.create_publisher(CompressedImage, '/color/image/compressed', qos_profile=qos_profile_sensor_data)
         else:            
-            self.imagePub = self.create_publisher(Image, '/color/image', 10)
+            self.imagePub = self.create_publisher(Image, '/color/image', qos_profile=qos_profile_sensor_data)
 
         self.bridge = CvBridge()
 
