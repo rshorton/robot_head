@@ -45,6 +45,7 @@ class CameraViewer(Node):
 
     def show_image(self, img):
         img = cv2.resize(img, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)
+        img = cv2.flip(img, 1)
         cv2.imshow("image", img)
 
         # Set initial window pos

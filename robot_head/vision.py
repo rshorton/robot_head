@@ -244,7 +244,7 @@ class RobotVision(Node):
             font_scale = 0.5
             disp_cnt = 0
 
-            flipCAM = True
+            flipCAM = False
 
             last_region = None
             last_poses = None
