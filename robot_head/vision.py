@@ -70,6 +70,8 @@ min_conf = 0.6
 
 frame_rate = 10.0
 
+use_uvc = False
+
 labelMap_MNetSSD = [
     "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow",
     "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
@@ -673,7 +675,13 @@ class RobotVision(Node):
     def create_pipeline(self):
         # Start defining a pipeline
         pipeline = dai.Pipeline()
-#        pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_2)
+
+        if use_uvc:
+            config = dai.Device.Config()
+            config.board.uvc = dai.BoardConfig.UVC(1280, 720)
+            config.board.uvc.frameType = dai.ImgFrame.Type.NV12 
+            pipeline.setBoardConfig(config.board)
+
         pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_4)
 
         monoLeft = pipeline.createMonoCamera()
@@ -697,18 +705,28 @@ class RobotVision(Node):
 
         # Color camera
         colorCam = pipeline.createColorCamera()
-        #colorCam.setPreviewSize(640, 360)
+#        colorCam.setPreviewSize(640, 360)
         colorCam.setPreviewSize(1280, 720)
 
         colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+#        colorCam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_720_P)
         colorCam.setInterleaved(False)
         colorCam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
         colorCam.setFps(frame_rate)
         colorCam.setPreviewKeepAspectRatio(False)
 
-        # Scale video from 1920x1080 to 640x360
+        # Scale video from 1920x1080
         # (This was a workaround for an issue with depthai)
-        #colorCam.setIspScale((1,3))
+        # Still seems to be needed for depthai v2.32.0.0
+        # Symptom - spatial coordinates are incorrect
+        #  to 640x360
+#        colorCam.setIspScale((1,3))
+        #  to 1280x720
+        colorCam.setIspScale((2,3))
+
+        if use_uvc:
+            uvc = pipeline.create(dai.node.UVC)
+            colorCam.video.link(uvc.input)
 
         manip_mn = pipeline.createImageManip()
         if use_tyolo_v4:
