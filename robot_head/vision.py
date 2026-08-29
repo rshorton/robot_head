@@ -299,7 +299,8 @@ class RobotVision(Node):
                             self.get_logger().debug("label: %s" % self.labelMap[tracklet.label])
                             roi = tracklet.roi.denormalize(640, 360)
                             #self.get_logger().debug("roi: %d,%d -- %d,%d" % (int(roi.topLeft().x), int(roi.topLeft().y), int(roi.bottomRight().x), int(roi.bottomRight().y)))
-                            self.get_logger().info("spacial: %f, %f, %f" % (tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
+                            self.get_logger().debug("id: %d, label: %s, spacial: %f, %f, %f" % (tracklet.id, self.labelMap[tracklet.label],
+                                tracklet.spatialCoordinates.x, tracklet.spatialCoordinates.y, tracklet.spatialCoordinates.z))
 
                             #if tracklet.srcImgDetection.label != "NoneType":
                             #    label = labelMap[tracklet.srcImgDetection.label]
