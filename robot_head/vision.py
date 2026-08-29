@@ -465,6 +465,8 @@ class RobotVision(Node):
 
                             cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, 1)
 
+                    depthFrameColor = cv2.resize(depthFrameColor, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)
+
                     cv2.imshow("depth", depthFrameColor)
 
                 # Image annotations
