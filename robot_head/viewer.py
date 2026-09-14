@@ -41,12 +41,16 @@ class CameraViewer(Node):
 
         self.bridge = CvBridge()
 
-        self.setWinPos = True
+        self.setWinPos = False
+        self.color_cam_win_name = "Color Cam"
+        cv2.namedWindow(self.color_cam_win_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.color_cam_win_name, 950, 700)
 
     def show_image(self, img):
         img = cv2.resize(img, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)
         img = cv2.flip(img, 1)
-        cv2.imshow("image", img)
+
+        cv2.imshow(self.color_cam_win_name, img)
 
         # Set initial window pos
         if self.setWinPos:
