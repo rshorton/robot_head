@@ -32,5 +32,6 @@ setup(
              'robot_head/BlazeposeDepthai.py',
              'robot_head/hailo_zmq_meta_sink.py',
              'robot_head/mediapipe_utils.py',
-             'robot_head/lewansoul_lx16a.py']
+             'robot_head/lewansoul_lx16a.py',
+             'robot_head/frame_buffer.py']
 )

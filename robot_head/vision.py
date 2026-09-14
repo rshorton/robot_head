@@ -21,6 +21,7 @@
 import time
 import pathlib
 from itertools import islice
+from datetime import timedelta
 
 import numpy as np
 #from scipy.optimize import linear_sum_assignment
@@ -31,14 +32,18 @@ import depthai as dai
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.node import Node
+from rclpy.time import Time
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, CompressedImage
 
 from object_detection_msgs.msg import ObjectDescArray
 from object_detection_msgs.msg import ObjectDesc
 from robot_head_interfaces.msg import TrackStatus, SaveImage, DetectedPose, EnablePoseDetection, HeadImu
+from robot_head_interfaces.srv import RGBDSnapshot, GetSpatialCoords
 
 from pose_interp import analyze_pose
+
+from frame_buffer import ExpiringFrameBuffer
 
 import mediapipe_utils as mpu
 from BlazeposeDepthai import BlazeposeDepthai, to_planar
@@ -67,6 +72,10 @@ pub_compressed_image = True
 
 objects_to_track = ["person", "cat"]
 min_conf = 0.6
+
+color_cam_frame_id = "oakd_center_camera"
+
+frame_buffer_cleanup_period = 1.0
 
 frame_rate = 10.0
 
@@ -134,6 +143,12 @@ class RobotVision(Node):
         super().__init__('robot_vision')
 
         self.image = None
+
+        self.last_synced_rgb_frame = None
+        self.last_synced_depth_frame = None
+        self.last_synced_frames_ts = None
+        self.snapshot_depth_buffer = ExpiringFrameBuffer(holding_period_seconds=10.0)
+
         # Publisher for camera color image
         if pub_compressed_image:
             self.imagePub = self.create_publisher(CompressedImage, '/color/image/compressed', qos_profile=qos_profile_sensor_data)
@@ -190,10 +205,17 @@ class RobotVision(Node):
             self.save_image_callback,
             1)
 
+        self.frame_buffer_timer = self.create_timer(frame_buffer_cleanup_period, self.frame_buffer_timer_callback)
+        
         self.setWinPos = True
 
         self.tracked = None
         self.save_image = None
+
+        self.roi = None                 # Most recent ROI for conversion to spatial coords
+
+        self.rgbd_snapshot_service = self.create_service(RGBDSnapshot, 'head/rgbd_snapshot', self.handle_rgbd_snapshot_service)
+        self.get_spatial_coords_service = self.create_service(GetSpatialCoords, 'head/get_spatial_coords', self.handle_get_spatial_coords)
 
         if hailo_ai_pipeline:
             self.hailo_meta_sink_face_recog = hailo_zmq_meta_sink(port = 5558)
@@ -217,8 +239,6 @@ class RobotVision(Node):
 
             detectionNNQueue = device.getOutputQueue(name="detections", maxSize=1, blocking=False)
             xoutBoundingBoxDepthMapping = device.getOutputQueue(name="boundingBoxDepthMapping", maxSize=2, blocking=False)
-            if show_depth:
-                depthQueue = device.getOutputQueue(name="depth", maxSize=1, blocking=False)
             if human_pose:
                 q_pd_out = device.getOutputQueue(name="pd_out", maxSize=1, blocking=False)
                 q_lm_out = device.getOutputQueue(name="lm_out", maxSize=2, blocking=False)
@@ -228,6 +248,8 @@ class RobotVision(Node):
                 ballDetectionNNQueue = device.getOutputQueue(name="ball_detections", maxSize=4, blocking=False)
             if use_imu:
                 imuQueue = device.getOutputQueue(name="imu", maxSize=2, blocking=False)
+
+            syncQueue = device.getOutputQueue("synced_depth_and_color", 10, False)
 
             edgeFrame = None
             inEdgeFrame = None
@@ -241,6 +263,7 @@ class RobotVision(Node):
             white = (255, 255, 255)
             yellow = (0, 255, 255)
             blue = (255, 0, 0)
+            green = (255, 255, 0)
             color = (0, 255, 0)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.5
@@ -259,9 +282,32 @@ class RobotVision(Node):
             self.tracklet_to_hailo_meta = {}
 
             while True:
+                new_depth_frame = False
 
                 rclpy.spin_once(self, timeout_sec=1.0/frame_rate/2.0)
 
+                try:
+                    msgGrp = syncQueue.tryGet()
+                    for name, msg in msgGrp:
+                        frame = msg.getCvFrame()
+                        if name == "depth":
+                            new_depth_frame = True
+                            self.last_synced_depth_frame = frame
+                            #depthFrameColor = cv2.normalize(frame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
+                            #depthFrameColor = cv2.equalizeHist(depthFrameColor)
+                            #depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+                            #depthFrameColor = cv2.resize(depthFrameColor, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)                            
+                            #cv2.imshow("depth", depthFrameColor)
+                        else:
+                            self.last_synced_rgb_frame = frame
+                            self.last_synced_frames_ts = self.get_clock().now()
+
+                        #for test    
+                        #cv2.imshow(name, frame)
+                except:                        
+                    continue
+                    self.get_logger().error("Failed to read from sync queue.")
+                
                 # Read meta data from the Hailo AI pipeline
                 if hailo_ai_pipeline:
                     self.read_hailo_meta()
@@ -280,7 +326,7 @@ class RobotVision(Node):
                         imuData = imuQueue.tryGet()
 
                 except:
-                    self.get_logger().error("Failed to read from queue.")
+                    self.get_logger().error("Failed to read from preview/nn queue.")
                     continue
 
                 if inNN != None:
@@ -312,7 +358,7 @@ class RobotVision(Node):
                             self.get_logger().debug(tracklet.status)
 
                     # Publish detections
-                    self.publish_detections(self.labelMap, tracklets, "oakd_center_camera", self.objectPublisher)
+                    self.publish_detections(self.labelMap, tracklets, color_cam_frame_id, self.objectPublisher)
 
                 if inPreviewCAM == None:
                     continue
@@ -440,9 +486,8 @@ class RobotVision(Node):
                         last_poses = None
 
                 # For debug
-                if show_depth:
-                    depth = depthQueue.get()
-                    depthFrame = depth.getFrame()
+                if show_depth and new_depth_frame:
+                    depthFrame = self.last_synced_depth_frame 
 
                     depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
                     depthFrameColor = cv2.equalizeHist(depthFrameColor)
@@ -573,6 +618,23 @@ class RobotVision(Node):
                             OverlayTextOnBox(frameCAM, x1 + 2, y1 + 2, 5, 5, [label], (0, 0, 0), 0.8, font, font_scale*3, white, 3)
                             cv2.rectangle(frameCAM, (x1, y1), (x2, y2), blue, 1)
 
+                    # Overlay most recent ROI to coord request
+                    if self.roi is not None:
+                            # Denormalize bounding box
+                            x1 = int(self.roi["x"]*widthCAM)
+                            x2 = int((self.roi["x"] + self.roi["w"])*widthCAM)
+                            y1 = int(self.roi["y"]*heightCAM)
+                            y2 = int((self.roi["y"] + self.roi["h"])*heightCAM)
+
+                            if flipCAM:
+                                swap = x2
+                                x2 = max(0, widthCAM - x1)
+                                x1 = max(0, widthCAM - swap)
+
+                            y1 = max(0, y1)
+                            y2 = max(0, y2)
+                            cv2.rectangle(frameCAM, (x1, y1), (x2, y2), green, 2)
+
                     OverlayTextOnBox(frameCAM, 0, frameCAM.shape[0] - 25, 5, 5, ["fps: {:.2f}".format(fps)], (0, 0, 0), 0.4, font, font_scale, white, 1)
 
                     # Normally image is shown by Viewer node when showing
@@ -676,6 +738,14 @@ class RobotVision(Node):
         imu.out.link(xlinkOut.input)
 
     def create_pipeline(self):
+
+        with dai.Device() as device:
+            calibData = device.readCalibration()
+            # Get intrinsics for the RGB camera (typically CAM_A)
+            self.color_cam_K = np.array(calibData.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, 1920, 1080))
+            self.color_cam_w = 1920
+            self.color_cam_h = 1080
+
         # Start defining a pipeline
         pipeline = dai.Pipeline()
 
@@ -799,11 +869,6 @@ class RobotVision(Node):
         depthRoiMap.setStreamName("boundingBoxDepthMapping")
         spatialDetectionNetwork.boundingBoxMapping.link(depthRoiMap.input)
 
-        if show_depth:
-            xoutDepth = pipeline.createXLinkOut()
-            xoutDepth.setStreamName("depth")
-            spatialDetectionNetwork.passthroughDepth.link(xoutDepth.input)
-
         nnOut = pipeline.createXLinkOut()
         nnOut.setStreamName("detections")
 
@@ -811,6 +876,17 @@ class RobotVision(Node):
             objectTracker.out.link(nnOut.input)
         else:
             spatialDetectionNetwork.out.link(nnOut.input)
+
+        # Use a sync object to get a synchronized pair
+        # of depth and color frames.  These are used when manually
+        # calculating spatial coords.
+        sync = pipeline.create(dai.node.Sync)
+        sync.setSyncThreshold(timedelta(milliseconds=50))        
+        spatialDetectionNetwork.passthroughDepth.link(sync.inputs["depth"])
+        colorCam.video.link(sync.inputs["color"])
+        xoutGrp = pipeline.create(dai.node.XLinkOut)
+        xoutGrp.setStreamName("synced_depth_and_color")
+        sync.out.link(xoutGrp.input)
 
         ######################################################
         # Ball detector
@@ -1210,6 +1286,116 @@ class RobotVision(Node):
         msg.accelz = a.z
         self.get_logger().debug('accely: %f' % a.y)        
         self.headImuPublisher.publish(msg)
+
+    # Purge expired frames in the depth frame buffer
+    def frame_buffer_timer_callback(self):
+        self.snapshot_depth_buffer.purge_expired(self.get_clock().now())
+
+    # Save the depth and color frames of a synced pair so it can be
+    # used later to perform  spatial coord calc for an specified ROI 
+    def handle_rgbd_snapshot_service(self, request, response):
+        if self.last_synced_depth_frame is None:
+            response.valid = False
+            return response
+
+        #temp
+        self.test_calc_spatial_xyz_ts = self.last_synced_frames_ts
+
+        # Save the images in a buffer that expires after a timeout
+        self.snapshot_depth_buffer.add_frame(self.last_synced_frames_ts, self.last_synced_depth_frame,
+                                             self.last_synced_rgb_frame)
+        
+        # Return the corresponding RGB image.  The timestamp of the image can be used later
+        # to lookup the depth frame
+        response.image = self.bridge.cv2_to_compressed_imgmsg(self.last_synced_rgb_frame, dst_format='jpg')
+        response.image.header.stamp = self.last_synced_frames_ts.to_msg()
+        response.valid = True
+        return response
+
+    def calculate_spatial_xyz(self, depth_frame, roi_x, roi_y, roi_w, roi_h, roi_depth_calc_size=5):
+        self.get_logger().debug(f"roi_x: {roi_x}, roi_y: {roi_y}, roi_w: {roi_w}, roi_h: {roi_h}, frame shape: {depth_frame.shape}")
+
+        fx, fy = self.color_cam_K[0][0], self.color_cam_K[1][1]
+        cx, cy = self.color_cam_K[0][2], self.color_cam_K[1][2] 
+        self.get_logger().debug(f"fx: {fx}, cx: {cx}, fy: {fy} cy: {cy}")
+
+        x_center_norm = roi_x + roi_w/2
+        y_center_norm = roi_y + roi_h/2
+
+        h, w = depth_frame.shape
+        x_center_d = int(x_center_norm*w)
+        y_center_d = int(y_center_norm*h)
+
+        self.get_logger().debug(f"x_center_depth: {x_center_d}, y_center: {y_center_d}")
+
+        # ROI bounds centered around the pixel
+        x_start_d = max(0, x_center_d - roi_depth_calc_size // 2)
+        x_end_d = min(w, x_center_d + roi_depth_calc_size // 2 + 1)
+        y_start_d = max(0, y_center_d - roi_depth_calc_size // 2)
+        y_end_d = min(h, y_center_d + roi_depth_calc_size // 2 + 1)
+
+        self.get_logger().debug(f"x_start_d: {x_start_d}, x_end_d: {x_end_d}, y_start_d: {y_start_d} y_end: {y_end_d}")
+
+        # Extract ROI and isolate valid depth values (greater than 0)
+        roi = depth_frame[y_start_d:y_end_d, x_start_d:x_end_d]
+        valid_depths = roi[roi > 0]
+        
+        if len(valid_depths) == 0:
+            self.get_logger().warn(f"calculate_spatial_xyz, no valid depth data")
+            return None, None, None  # No valid depth data in this window
+            
+        # Calculate Z
+        Z = np.median(valid_depths)
+
+        self.get_logger().debug(f"roi depth: {Z}")
+
+        # De-project 2D pixel to 3D Spatial coordinates (millimeter to meter conversion)
+        x_center_color = cx*2*x_center_norm
+        y_center_color = cy*2*y_center_norm
+
+        X = ((x_center_color - cx) * Z / fx) / 1000.0
+        Y = ((y_center_color - cy) * Z / fy) / 1000.0
+        Z_meters = Z / 1000.0
+        return X, Y, Z_meters
+
+    # Calculate the spatial coords for an ROI using a previously snapshotted depth frame
+    def handle_get_spatial_coords(self, request, response):
+        response.valid = False
+
+        # Try to find the corresponding frame using the specified TS
+        frame_depth, frame_color, ts = self.snapshot_depth_buffer.lookup_frame(Time.from_msg(request.time_stamp))
+        if frame_depth is None:
+            self.get_logger().warn(f"handle_get_spatial_coords, depth frame not found")
+            return response
+
+        self.roi = {}
+        self.roi["x"] = request.roi_x
+        self.roi["y"] = request.roi_y
+        self.roi["w"] = request.roi_w
+        self.roi["h"] = request.roi_h
+
+        # For debug: show requested ROI on image
+        if False:
+            h, w, d = frame_color.shape
+            x_roi = int(request.roi_x*w)
+            y_roi = int(request.roi_y*h)
+            w_roi = int(request.roi_w*w)
+            h_roi = int(request.roi_h*h)
+            self.get_logger().info(f"x_roi: {x_roi}, y_roi: {y_roi}, w_roi: {w_roi} h_roi: {h_roi}")
+            cv2.rectangle(frame_color, (x_roi, y_roi), (x_roi + w_roi, y_roi + h_roi), (0, 255, 255), 1)
+            frame_color = cv2.resize(frame_color, (int(640*1.4), int(360*1.4)), interpolation = cv2.INTER_AREA)                            
+            cv2.imshow("handle_get_spatial_coords", frame_color)
+
+        # Calc the spatial coords of the center point
+        x, y, z = self.calculate_spatial_xyz(frame_depth, request.roi_x, request.roi_y, request.roi_w, request.roi_h)
+        if x is not None:
+            # Use ros convention
+            response.x = z
+            response.y = -x 
+            response.z = -y 
+            response.valid = True
+            response.frame_id = color_cam_frame_id
+        return response            
 
 def main(args=None):
     rclpy.init(args=args)
