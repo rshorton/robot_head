@@ -103,9 +103,9 @@ class CameraServo:
         if joint == "pan":
             self.chan = 1
             # Min/max/mid positions determined by experiment
-            self.servo_minpos = 122
+            self.servo_minpos = 0
             self.servo_midpos = 500
-            self.servo_maxpos = 870
+            self.servo_maxpos = 1000
 
             self.servo_cal_min_servo = 122
             self.servo_cal_min_deg = -90
@@ -399,6 +399,7 @@ class CameraTracker(Node):
         self.tflistener = tf2_ros.TransformListener(self.tfBuffer, self)
 
         self.track_cmd_mode = 'Track'           # Current track mode: None, Track, TrackScan, Scan, Manual, Joy
+        #self.track_cmd_mode = 'None'           # Current track mode: None, Track, TrackScan, Scan, Manual, Joy
         self.track_new_mode = None              # New mode received from the topic
         self.track_sound_mode = 'None'          # Type of sound to trigger a scan: None, Any, Wakeword
         self.track_turn_base = False            # True if base should be turned to face tracked object
@@ -838,6 +839,7 @@ class CameraTracker(Node):
 
     # For rviz visualization
     def publish_tracked_as_pose(self, msg):
+        self.get_logger().debug('Publishing tracked position, pt: (%f, %f, %f)' % (msg.pose.position.x, msg.pose.position.y, msg.pose.position.z))
         self.pub_tracked_pose.publish(msg)
 
     # Broadcast the pan-tilt joints so ROS TF can be used to tranform positions
