@@ -147,7 +147,7 @@ class RobotVision(Node):
         self.last_synced_rgb_frame = None
         self.last_synced_depth_frame = None
         self.last_synced_frames_ts = None
-        self.snapshot_depth_buffer = ExpiringFrameBuffer(holding_period_seconds=10.0)
+        self.snapshot_depth_buffer = ExpiringFrameBuffer(holding_period_seconds=30.0)
 
         # Publisher for camera color image
         if pub_compressed_image:
