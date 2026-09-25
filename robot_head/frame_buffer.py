@@ -28,6 +28,9 @@ class ExpiringFrameBuffer:
             self.purge_expired(msg_time)
             self.buffer.append((msg_time, frame_depth, frame_color))
 
+            seconds, nanoseconds = msg_time.seconds_nanoseconds()
+            self.logger.info(f"Adding frame: {seconds}.{nanoseconds}")
+
     def lookup_frame(self, target_time: Time, max_tolerance_seconds: float = 0.05):
         """
         Finds the closest frame to the target_time within a maximum tolerance window.
