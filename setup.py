@@ -19,7 +19,9 @@ setup(
     maintainer_email='horton.rscotti@gmail.com',
     description='Robot Head Control Node',
     license='TODO: License declaration',
-    tests_require=['pytest'],
+    extras_require={
+        'test': ['pytest'],
+    },  
     entry_points={
         'console_scripts': [
             'vision = robot_head.vision:main',
